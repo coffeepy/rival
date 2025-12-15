@@ -2,7 +2,8 @@ import { createRivetKit } from "@rivetkit/react";
 import { useState } from "react";
 import type { registry } from "../../server/registry";
 
-const { useActor } = createRivetKit<typeof registry>("http://127.0.0.1:6420");
+// Point the React client at our Hono server, which now hosts RivetKit as a library.
+const { useActor } = createRivetKit<typeof registry>("http://127.0.0.1:3000/engine");
 
 function App() {
 	const [count, setCount] = useState(0);
@@ -12,7 +13,6 @@ function App() {
 		name: "counter",
 		key: [counterName],
 	});
-
 	counter.useEvent("newCount", (x: number) => setCount(x));
 
 	const increment = async () => {
@@ -36,7 +36,7 @@ function App() {
 				</label>
 			</div>
 
-			<button onClick={increment}>Increment</button>
+			<button type="button" onClick={increment}>Increment</button>
 
 			<div style={{ marginTop: "1rem", fontSize: "0.9rem", color: "#666" }}>
 				<p>Connection Status: {counter.isConnected ? "Connected" : "Disconnected"}</p>
