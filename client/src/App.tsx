@@ -1,35 +1,49 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { createRivetKit } from "@rivetkit/react";
+import { useState } from "react";
+import type { registry } from "../../server/registry";
+
+const { useActor } = createRivetKit<typeof registry>("http://127.0.0.1:6420");
 
 function App() {
-  const [count, setCount] = useState(0)
+	const [count, setCount] = useState(0);
+	const [counterName, setCounterName] = useState("test-counter");
 
-  return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+	const counter = useActor({
+		name: "counter",
+		key: [counterName],
+	});
+
+	counter.useEvent("newCount", (x: number) => setCount(x));
+
+	const increment = async () => {
+		await counter.connection?.increment(1);
+	};
+
+	return (
+		<div style={{ padding: "2rem" }}>
+			<h1>Rivet Counter</h1>
+			<h2>Count: {count}</h2>
+
+			<div style={{ marginBottom: "1rem" }}>
+				<label>
+					Counter Name:
+					<input
+						type="text"
+						value={counterName}
+						onChange={(e) => setCounterName(e.target.value)}
+						style={{ marginLeft: "0.5rem", padding: "0.25rem" }}
+					/>
+				</label>
+			</div>
+
+			<button onClick={increment}>Increment</button>
+
+			<div style={{ marginTop: "1rem", fontSize: "0.9rem", color: "#666" }}>
+				<p>Connection Status: {counter.isConnected ? "Connected" : "Disconnected"}</p>
+				<p>Try opening multiple tabs to see real-time sync.</p>
+			</div>
+		</div>
+	);
 }
 
-export default App
+export default App;

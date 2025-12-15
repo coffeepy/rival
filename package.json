@@ -8,6 +8,9 @@
     "build": "bun scripts/build.ts"
   },
   "dependencies": {
+    "@hono/node-server": "^1.19.7",
+    "@hono/node-ws": "^1.2.0",
+    "@rivetkit/react": "^2.0.27",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "rivetkit": "^2.0.27"
