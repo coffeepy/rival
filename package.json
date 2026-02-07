@@ -1,33 +1,25 @@
 {
-  "name": "rival",
-  "type": "module",
-  "scripts": {
-    "dev:client": "vite client",
-    "build:client": "vite build -c client/vite.config.ts",
-    "dev:server": "bun run --hot server/index.ts",
-    "build": "bun scripts/build.ts"
-  },
-  "dependencies": {
-    "@hono/node-server": "^1.19.7",
-    "@hono/node-ws": "^1.2.0",
-    "@rivetkit/react": "^2.0.27",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "rivetkit": "^2.0.27"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.39.1",
-    "@types/bun": "latest",
-    "@types/node": "^24.10.1",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
-    "typescript": "~5.9.3",
-    "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
-  }
+	"name": "rival",
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"test": "bun test",
+		"test:phase1": "bun test/phase1.test.ts",
+		"check": "bun run check:types && bun run check:lint",
+		"check:types": "tsc --noEmit",
+		"check:lint": "biome check .",
+		"format": "biome format --write .",
+		"lint": "biome lint .",
+		"lint:fix": "biome lint --write .",
+		"ci": "bun run check && bun run test"
+	},
+	"dependencies": {
+		"rivetkit": "^2.0.27",
+		"zod": "^3.24.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.0",
+		"@types/bun": "latest",
+		"typescript": "~5.9.3"
+	}
 }
