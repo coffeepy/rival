@@ -288,7 +288,7 @@ async function testWorkflowIntegration() {
 			noWelcome: true,
 		});
 
-		const coordinator = (client as Record<string, unknown>)[compiled.coordinatorActorName] as {
+		const coordinator = (client as Record<string, unknown>)[compiled.coordinatorActorRef] as {
 			getOrCreate: (id: string) => {
 				run: (
 					id: string,

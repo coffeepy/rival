@@ -2,7 +2,7 @@
  * Plan Types
  *
  * The Plan (AST) drives both execution and UI rendering.
- * References actor type names (strings), not functions.
+ * References actor refs (strings), not functions.
  */
 
 import { z } from "zod";
@@ -15,8 +15,8 @@ export interface StepPlanNode {
 	type: "step";
 	/** Human-readable step name */
 	name: string;
-	/** Actor type name (used with client[actorType].getOrCreate) */
-	actorType: string;
+	/** Actor ref (used with client[actorRef].getOrCreate) */
+	actorRef: string;
 	/** Step configuration (timeout, retry, etc.) */
 	config?: StepConfig;
 }
@@ -28,8 +28,8 @@ export interface StepPlanNode {
 export interface BranchPlanNode {
 	type: "branch";
 	name: string;
-	/** Actor type for condition evaluation */
-	conditionActorType: string;
+	/** Actor ref for condition evaluation */
+	conditionActorRef: string;
 	/** Nodes to execute if condition is true */
 	then: PlanNode[];
 	/** Nodes to execute if condition is false */
@@ -43,8 +43,8 @@ export interface BranchPlanNode {
 export interface LoopPlanNode {
 	type: "loop";
 	name: string;
-	/** Actor type for condition evaluation */
-	conditionActorType: string;
+	/** Actor ref for condition evaluation */
+	conditionActorRef: string;
 	/** Nodes to execute each iteration */
 	body: PlanNode[];
 }
@@ -67,8 +67,8 @@ export interface ParallelPlanNode {
 export interface WorkflowPlanNode {
 	type: "workflow";
 	name: string;
-	/** Actor type for the nested workflow coordinator */
-	coordinatorActorType: string;
+	/** Actor ref for the nested workflow coordinator */
+	coordinatorActorRef: string;
 }
 
 /**
@@ -89,7 +89,7 @@ export type PlanNode =
 export const stepPlanNodeSchema = z.object({
 	type: z.literal("step"),
 	name: z.string().min(1),
-	actorType: z.string().min(1),
+	actorRef: z.string().min(1),
 	config: z.any().optional(),
 });
 
@@ -98,7 +98,7 @@ const planNodeSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("branch"),
 		name: z.string().min(1),
-		conditionActorType: z.string().min(1),
+		conditionActorRef: z.string().min(1),
 		// biome-ignore lint/suspicious/noThenProperty: "then" is the correct name for if/then/else branch nodes
 		then: z.array(z.any()),
 		else: z.array(z.any()),
@@ -106,7 +106,7 @@ const planNodeSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("loop"),
 		name: z.string().min(1),
-		conditionActorType: z.string().min(1),
+		conditionActorRef: z.string().min(1),
 		body: z.array(z.any()),
 	}),
 	z.object({
@@ -117,7 +117,7 @@ const planNodeSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("workflow"),
 		name: z.string().min(1),
-		coordinatorActorType: z.string().min(1),
+		coordinatorActorRef: z.string().min(1),
 	}),
 ]);
 

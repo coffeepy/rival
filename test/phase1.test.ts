@@ -108,36 +108,36 @@ const checkLastStepActor = createStepActor(checkLastStep);
 // =============================================================================
 
 const happyPathPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorType: "findTreeStep" },
-	{ type: "step", name: "chopTree", actorType: "chopTreeStep" },
-	{ type: "step", name: "processLumber", actorType: "processLumberStep" },
+	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", name: "chopTree", actorRef: "chopTreeStep" },
+	{ type: "step", name: "processLumber", actorRef: "processLumberStep" },
 ];
 
 const failurePlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorType: "findTreeStep" },
-	{ type: "step", name: "failStep", actorType: "failingStepActor" },
-	{ type: "step", name: "chopTree", actorType: "chopTreeStep" }, // Should not run
+	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", name: "failStep", actorRef: "failingStepActor" },
+	{ type: "step", name: "chopTree", actorRef: "chopTreeStep" }, // Should not run
 ];
 
 const retryPlan: PlanNode[] = [
-	{ type: "step", name: "flakyStep", actorType: "flakyStepActor", config: { maxAttempts: 5 } },
+	{ type: "step", name: "flakyStep", actorRef: "flakyStepActor", config: { maxAttempts: 5 } },
 ];
 
 const skipPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorType: "findTreeStep" },
-	{ type: "step", name: "skipStep", actorType: "skipStepActor" },
-	{ type: "step", name: "chopTree", actorType: "chopTreeStep" },
+	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", name: "skipStep", actorRef: "skipStepActor" },
+	{ type: "step", name: "chopTree", actorRef: "chopTreeStep" },
 ];
 
 const continueOnErrorPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorType: "findTreeStep" },
-	{ type: "step", name: "continueStep", actorType: "continueOnErrorStepActor" },
-	{ type: "step", name: "checkStep", actorType: "checkLastStepActor" },
+	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", name: "continueStep", actorRef: "continueOnErrorStepActor" },
+	{ type: "step", name: "checkStep", actorRef: "checkLastStepActor" },
 ];
 
 const continueOnErrorLastPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorType: "findTreeStep" },
-	{ type: "step", name: "continueStep", actorType: "continueOnErrorStepActor" },
+	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", name: "continueStep", actorRef: "continueOnErrorStepActor" },
 ];
 
 const happyPathCoordinator = createWorkflowCoordinator("happyPath", happyPathPlan);
@@ -360,8 +360,8 @@ function testCoordinatorRejectsDuplicateStepNames(): boolean {
 	console.log("--- TEST 9: Coordinator rejects duplicate step names (Zod) ---\n");
 	try {
 		createWorkflowCoordinator("dupCoord", [
-			{ type: "step", name: "doWork", actorType: "workStep" },
-			{ type: "step", name: "doWork", actorType: "workStep2" }, // duplicate name
+			{ type: "step", name: "doWork", actorRef: "workStep" },
+			{ type: "step", name: "doWork", actorRef: "workStep2" }, // duplicate name
 		]);
 		console.log("  FAILED: expected error was not thrown");
 		return false;

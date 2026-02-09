@@ -19,8 +19,8 @@
  *
  * // Create plan
  * const plan = [
- *   { type: 'step', name: 'findTree', actorType: 'findTreeStep' },
- *   { type: 'step', name: 'chopTree', actorType: 'chopTreeStep' },
+ *   { type: 'step', name: 'findTree', actorRef: 'findTreeStep' },
+ *   { type: 'step', name: 'chopTree', actorRef: 'chopTreeStep' },
  * ];
  *
  * // Create coordinator

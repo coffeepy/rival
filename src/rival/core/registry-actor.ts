@@ -177,9 +177,7 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 
 				// Get the coordinator and start it
 				const client = c.client();
-				const coordinatorType = (client as Record<string, unknown>)[
-					workflow.coordinatorActorName
-				] as
+				const coordinatorType = (client as Record<string, unknown>)[workflow.coordinatorActorRef] as
 					| {
 							getOrCreate: (key: string) => {
 								run: (id: string, input: unknown) => Promise<WorkflowExecutionResult>;
@@ -193,7 +191,7 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 						runId: id,
 						workflowName,
 						status: "failed",
-						error: `Coordinator "${workflow.coordinatorActorName}" not found in registry`,
+						error: `Coordinator "${workflow.coordinatorActorRef}" not found in registry`,
 					};
 				}
 
@@ -262,9 +260,7 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 
 				// Get the coordinator and cancel it
 				const client = c.client();
-				const coordinatorType = (client as Record<string, unknown>)[
-					workflow.coordinatorActorName
-				] as
+				const coordinatorType = (client as Record<string, unknown>)[workflow.coordinatorActorRef] as
 					| {
 							getOrCreate: (key: string) => {
 								cancel: () => Promise<void>;

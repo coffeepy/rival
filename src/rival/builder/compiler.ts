@@ -13,7 +13,7 @@
  *
  * const compiled = compileWorkflow(definition);
  * // compiled.actors = { tree_findTree, tree_chopTree, tree_coordinator }
- * // compiled.plan = [{ type: 'step', name: 'findTree', actorType: 'tree_findTree' }, ...]
+ * // compiled.plan = [{ type: 'step', name: 'findTree', actorRef: 'tree_findTree' }, ...]
  * ```
  */
 
@@ -51,32 +51,32 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 	const plan: PlanNode[] = [];
 
 	for (const step of steps) {
-		// Generate unique actor type name: {workflowName}_{stepName}
-		const actorTypeName = `${name}_${step.name}`;
+		// Generate unique actor ref: {workflowName}_{stepName}
+		const actorRef = `${name}_${step.name}`;
 
 		// Create step actor with function BAKED IN
-		actors[actorTypeName] = createStepActor(step.fn);
+		actors[actorRef] = createStepActor(step.fn);
 
-		// Add to plan (referencing actor by type name string)
+		// Add to plan (referencing actor by registry key string)
 		const planNode: StepPlanNode = {
 			type: "step",
 			name: step.name,
-			actorType: actorTypeName,
+			actorRef: actorRef,
 			config: step.config,
 		};
 		plan.push(planNode);
 	}
 
 	// Create the coordinator actor
-	const coordinatorActorName = `${name}_coordinator`;
-	actors[coordinatorActorName] = createWorkflowCoordinator(name, plan, inputSchema);
+	const coordinatorActorRef = `${name}_coordinator`;
+	actors[coordinatorActorRef] = createWorkflowCoordinator(name, plan, inputSchema);
 
 	return {
 		name,
 		inputSchema,
 		plan,
 		actors,
-		coordinatorActorName,
+		coordinatorActorRef,
 		description,
 	};
 }
