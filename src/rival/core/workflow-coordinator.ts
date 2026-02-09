@@ -122,8 +122,8 @@ export function createWorkflowCoordinator(
 					c.state.currentStepIndex = i;
 					console.log(`[${workflowName}/${workflowId}] Executing: ${node.name}`);
 
-					// Get the step actor type from client using dynamic property access
-					const stepActorType = (client as Record<string, unknown>)[node.actorType] as
+					// Get the step actor reference from client using dynamic property access
+					const stepActorRef = (client as Record<string, unknown>)[node.actorRef] as
 						| {
 								getOrCreate: (key: string) => {
 									execute: (
@@ -136,9 +136,9 @@ export function createWorkflowCoordinator(
 						  }
 						| undefined;
 
-					if (!stepActorType) {
+					if (!stepActorRef) {
 						c.state.status = "failed";
-						c.state.error = `Actor type "${node.actorType}" not found in registry`;
+						c.state.error = `Actor ref "${node.actorRef}" not found in registry`;
 						c.state.failedStep = node.name;
 						c.state.completedAt = Date.now();
 
@@ -148,7 +148,7 @@ export function createWorkflowCoordinator(
 
 					// Create step instance with unique key
 					const stepKey = `${workflowId}-${node.name}`;
-					const stepActor = stepActorType.getOrCreate(stepKey);
+					const stepActor = stepActorRef.getOrCreate(stepKey);
 
 					// Build context from current workflow state
 					const context = buildStepContext({

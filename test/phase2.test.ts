@@ -127,14 +127,14 @@ async function testCompiler() {
 
 	console.log("Compiled workflow:");
 	console.log(`  Name: ${compiled.name}`);
-	console.log(`  Coordinator: ${compiled.coordinatorActorName}`);
+	console.log(`  Coordinator: ${compiled.coordinatorActorRef}`);
 	console.log(`  Actor count: ${Object.keys(compiled.actors).length}`);
-	console.log(`  Actor types: ${Object.keys(compiled.actors).join(", ")}`);
+	console.log(`  Actor refs: ${Object.keys(compiled.actors).join(", ")}`);
 	console.log(`  Plan nodes: ${compiled.plan.length}`);
 
 	for (const node of compiled.plan) {
 		if (node.type === "step") {
-			console.log(`    - ${node.name} -> ${node.actorType}`);
+			console.log(`    - ${node.name} -> ${node.actorRef}`);
 		}
 	}
 
@@ -152,12 +152,12 @@ async function testCompiler() {
 		}
 	}
 
-	// Verify plan references correct actor types
+	// Verify plan references correct actor refs
 	for (const node of compiled.plan) {
 		if (node.type === "step") {
-			const expectedActorType = `orderFlow_${node.name}`;
-			if (node.actorType !== expectedActorType) {
-				throw new Error(`Plan node ${node.name} has wrong actorType: ${node.actorType}`);
+			const expectedActorRef = `orderFlow_${node.name}`;
+			if (node.actorRef !== expectedActorRef) {
+				throw new Error(`Plan node ${node.name} has wrong actorRef: ${node.actorRef}`);
 			}
 		}
 	}
@@ -198,9 +198,7 @@ async function testExecution() {
 	});
 
 	// Get the coordinator and run the workflow
-	const coordinator = (client as Record<string, unknown>)[
-		compiledWorkflow.coordinatorActorName
-	] as {
+	const coordinator = (client as Record<string, unknown>)[compiledWorkflow.coordinatorActorRef] as {
 		getOrCreate: (id: string) => {
 			run: (
 				id: string,

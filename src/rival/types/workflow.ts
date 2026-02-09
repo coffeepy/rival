@@ -36,10 +36,10 @@ export interface CompiledWorkflow {
 	inputSchema?: ZodSchema;
 	/** Serializable plan (AST) for execution and UI */
 	plan: PlanNode[];
-	/** Actor definitions keyed by actor type name */
+	/** Actor definitions keyed by actor name */
 	actors: Record<string, unknown>;
-	/** Name of the coordinator actor type */
-	coordinatorActorName: string;
+	/** Name of the coordinator actor name */
+	coordinatorActorRef: string;
 	/** Optional description */
 	description?: string;
 }
