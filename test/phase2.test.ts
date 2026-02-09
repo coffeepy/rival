@@ -10,9 +10,10 @@
  * Run with: bun test/phase2.test.ts
  */
 
-import { setup } from "rivetkit";
+import { createMemoryDriver, setup } from "rivetkit";
 import { z } from "zod";
 import { type StepContext, compileWorkflow, createWorkflow, defineWorkflow } from "../src/rival";
+import { waitForStatus } from "./helpers";
 
 // =============================================================================
 // STEP FUNCTIONS
@@ -124,6 +125,8 @@ async function testCompiler() {
 		.build();
 
 	const compiled = compileWorkflow(definition);
+	// compileWorkflow is the key handoff from DX-friendly builder API to runtime:
+	// it generates concrete actor definitions + a serializable execution plan.
 
 	console.log("Compiled workflow:");
 	console.log(`  Name: ${compiled.name}`);
@@ -193,39 +196,42 @@ async function testExecution() {
 	});
 
 	const { client } = registry.start({
+		// In-memory Rivet runtime for deterministic tests.
+		driver: createMemoryDriver(),
 		disableDefaultServer: true,
 		noWelcome: true,
 	});
 
-	// Get the coordinator and run the workflow
+	// Get the coordinator and start the workflow
 	const coordinator = (client as Record<string, unknown>)[
 		compiledWorkflow.coordinatorActorName
 	] as {
 		getOrCreate: (id: string) => {
-			run: (
-				id: string,
-				input: unknown,
-			) => Promise<{ status: string; results?: Record<string, unknown> }>;
+			start: (id: string, input: unknown) => Promise<{ started: true }>;
+			getState: () => Promise<{ status: string; stepResults: Record<string, unknown> }>;
 		};
 	};
 
 	const instance = coordinator.getOrCreate("test-order-1");
-	const result = await instance.run("test-order-1", {
+	// start() schedules orchestration work; it does not wait for final completion.
+	await instance.start("test-order-1", {
 		orderId: "ORD-123",
 		amount: 99.99,
 	});
+	// Polling here reflects the expected integration model (UI/API checking progress).
+	const state = await waitForStatus(instance);
 
 	console.log("Execution result:");
-	console.log(JSON.stringify(result, null, 2));
+	console.log(JSON.stringify({ status: state.status, results: state.stepResults }, null, 2));
 
-	if (result.status !== "completed") {
-		throw new Error(`Expected completed, got ${result.status}`);
+	if (state.status !== "completed") {
+		throw new Error(`Expected completed, got ${state.status}`);
 	}
 
 	// Verify all steps executed
 	const expectedSteps = ["validateInput", "processPayment", "sendConfirmation"];
 	for (const step of expectedSteps) {
-		if (!result.results?.[step]) {
+		if (!state.stepResults?.[step]) {
 			throw new Error(`Missing result for step: ${step}`);
 		}
 	}
@@ -242,6 +248,8 @@ async function testDefineWorkflow() {
 	console.log("--- TEST: defineWorkflow Shorthand ---\n");
 
 	const compiled = defineWorkflow("quickFlow", {
+		// defineWorkflow is shorthand for "create definition + compile immediately".
+		// Useful when you want explicit step names with minimal boilerplate.
 		steps: [
 			{ fn: validateInput, name: "validate" },
 			{ fn: processPayment, name: "pay" },

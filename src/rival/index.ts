@@ -102,7 +102,12 @@ export {
 	createRegistryActor,
 	registerWorkflow,
 } from "./core/registry-actor";
-export type { ActiveRun, RegistryActorState, LaunchResult } from "./core/registry-actor";
+export type {
+	ActiveRun,
+	RegistryActorState,
+	LaunchResult,
+	RunStatusInfo,
+} from "./core/registry-actor";
 
 // Predefined Steps
 export { httpStep, delayStep } from "./steps";

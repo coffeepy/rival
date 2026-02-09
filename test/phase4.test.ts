@@ -8,7 +8,7 @@
  * Run with: bun test/phase4.test.ts
  */
 
-import { setup } from "rivetkit";
+import { createMemoryDriver, setup } from "rivetkit";
 import {
 	type StepContext,
 	compileWorkflow,
@@ -16,6 +16,7 @@ import {
 	delayStep,
 	httpStep,
 } from "../src/rival";
+import { waitForStatus } from "./helpers";
 
 // =============================================================================
 // TEST: DELAY STEP
@@ -28,6 +29,8 @@ async function testDelayStep() {
 	const shortDelay = delayStep({ milliseconds: 50 });
 
 	const mockContext: StepContext = {
+		// We can unit-test a step factory without spinning up Rivet actors by
+		// constructing StepContext directly. This is ideal for pure step behavior.
 		input: {},
 		state: {},
 		steps: {},
@@ -63,6 +66,7 @@ async function testDelayStep() {
 	}
 
 	// Test 3: Dynamic delay from context
+	// Factories can resolve config from runtime context, not just static literals.
 	const dynamicDelay = delayStep({
 		milliseconds: ({ input }) => (input as { waitMs: number }).waitMs,
 	});
@@ -98,6 +102,7 @@ async function testHttpStep() {
 	console.log("--- TEST: HTTP Step ---\n");
 
 	// Start a simple mock server
+	// Local server keeps this test hermetic while exercising real fetch behavior.
 	const server = Bun.serve({
 		port: 0, // Random available port
 		fetch(req) {
@@ -141,6 +146,7 @@ async function testHttpStep() {
 
 	try {
 		const mockContext: StepContext = {
+			// Context shape matches what Rival coordinators pass to step actors.
 			input: { userId: 42 },
 			state: {},
 			steps: {},
@@ -259,6 +265,8 @@ async function testWorkflowIntegration() {
 
 	try {
 		// Create a workflow using predefined steps
+		// This demonstrates the "library user path":
+		// create workflow -> compile -> register actors -> start coordinator.
 		const workflow = createWorkflow("apiWorkflow")
 			.step(function logStart({ log }: StepContext) {
 				log.info("Starting API workflow");
@@ -284,26 +292,29 @@ async function testWorkflowIntegration() {
 		});
 
 		const { client } = registry.start({
+			// In-memory driver is enough to validate orchestration and predefined steps.
+			driver: createMemoryDriver(),
 			disableDefaultServer: true,
 			noWelcome: true,
 		});
 
 		const coordinator = (client as Record<string, unknown>)[compiled.coordinatorActorName] as {
 			getOrCreate: (id: string) => {
-				run: (
-					id: string,
-					input: unknown,
-				) => Promise<{ status: string; results?: Record<string, unknown> }>;
+				start: (id: string, input: unknown) => Promise<{ started: true }>;
+				getState: () => Promise<{ status: string; stepResults: Record<string, unknown> }>;
 			};
 		};
 
 		console.log("\nRunning workflow...");
-		const result = await coordinator.getOrCreate("test-api-1").run("test-api-1", {});
+		const instance = coordinator.getOrCreate("test-api-1");
+		await instance.start("test-api-1", {});
+		// Poll terminal state because start() is asynchronous orchestration kickoff.
+		const state = await waitForStatus(instance);
 
-		console.log(`\nResult: ${result.status}`);
+		console.log(`\nResult: ${state.status}`);
 
-		if (result.status !== "completed") {
-			throw new Error(`Expected completed, got ${result.status}`);
+		if (state.status !== "completed") {
+			throw new Error(`Expected completed, got ${state.status}`);
 		}
 
 		console.log("\n[Workflow Integration tests passed]\n");

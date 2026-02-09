@@ -11,7 +11,7 @@
  * Run with: bun test/phase1.test.ts
  */
 
-import { setup } from "rivetkit";
+import { createMemoryDriver, setup } from "rivetkit";
 import {
 	type PlanNode,
 	type StepContext,
@@ -21,6 +21,7 @@ import {
 	createWorkflow,
 	createWorkflowCoordinator,
 } from "../src/rival";
+import { waitForStatus } from "./helpers";
 
 // =============================================================================
 // STEP FUNCTIONS
@@ -66,6 +67,13 @@ function skipStep({ state, log }: StepContext) {
 	return null;
 }
 
+function slowStepForTimeout({ log }: StepContext) {
+	log.info("Starting slow step (will exceed timeout)...");
+	return new Promise((resolve) => {
+		setTimeout(() => resolve({ done: true }), 500);
+	});
+}
+
 function stepErrorRetry({ log }: StepContext) {
 	log.info("Throwing StepError with retry");
 	throw new StepError("Retry me", {
@@ -102,6 +110,7 @@ const skipStepActor = createStepActor(skipStep);
 const stepErrorRetryActor = createStepActor(stepErrorRetry);
 const continueOnErrorStepActor = createStepActor(continueOnErrorStep);
 const checkLastStepActor = createStepActor(checkLastStep);
+const slowStepForTimeoutActor = createStepActor(slowStepForTimeout);
 
 // =============================================================================
 // CREATE WORKFLOW COORDINATORS
@@ -140,6 +149,17 @@ const continueOnErrorLastPlan: PlanNode[] = [
 	{ type: "step", name: "continueStep", actorType: "continueOnErrorStepActor" },
 ];
 
+const timeoutPlan: PlanNode[] = [
+	{ type: "step", name: "findTree", actorType: "findTreeStep" },
+	{
+		type: "step",
+		name: "slowStep",
+		actorType: "slowStepForTimeoutActor",
+		config: { timeout: 100 },
+	},
+	{ type: "step", name: "chopTree", actorType: "chopTreeStep" }, // Should not run
+];
+
 const happyPathCoordinator = createWorkflowCoordinator("happyPath", happyPathPlan);
 const failureCoordinator = createWorkflowCoordinator("failure", failurePlan);
 const retryCoordinator = createWorkflowCoordinator("retry", retryPlan);
@@ -152,11 +172,16 @@ const continueOnErrorLastCoordinator = createWorkflowCoordinator(
 	"continueOnErrorLast",
 	continueOnErrorLastPlan,
 );
+const timeoutCoordinator = createWorkflowCoordinator("timeout", timeoutPlan);
 
 // =============================================================================
 // REGISTER WITH RIVET
 // =============================================================================
 
+// This test registry mirrors how users wire Rival in a real app:
+// 1) register reusable step actors
+// 2) register one or more coordinator actors that reference those steps by type
+// 3) call coordinator actions via a typed/untyped Rivet client handle
 const registry = setup({
 	use: {
 		// Step actors
@@ -169,6 +194,7 @@ const registry = setup({
 		stepErrorRetryActor,
 		continueOnErrorStepActor,
 		checkLastStepActor,
+		slowStepForTimeoutActor,
 		// Workflow coordinators
 		happyPathCoordinator,
 		failureCoordinator,
@@ -176,6 +202,7 @@ const registry = setup({
 		skipCoordinator,
 		continueOnErrorCoordinator,
 		continueOnErrorLastCoordinator,
+		timeoutCoordinator,
 	},
 });
 
@@ -189,6 +216,9 @@ async function main() {
 	console.log(`${"=".repeat(60)}\n`);
 
 	const { client } = registry.start({
+		// Memory driver keeps test runs fast and isolated.
+		// State persists only for this process lifetime (great for tests, not prod).
+		driver: createMemoryDriver(),
 		disableDefaultServer: true,
 		noWelcome: true,
 	});
@@ -197,18 +227,26 @@ async function main() {
 	console.log("--- TEST 1: Happy Path ---\n");
 
 	const wf1 = client.happyPathCoordinator.getOrCreate("test-happy");
-	const result1 = await wf1.run("test-happy", { location: "forest-north" });
+	// Actor key ("test-happy") is the durable identity for this coordinator instance.
+	// Re-using the same key re-opens the same actor state.
+	await wf1.start("test-happy", { location: "forest-north" });
+	// start() is non-blocking orchestration kickoff. We poll state until terminal.
+	const state1 = await waitForStatus(wf1);
 
-	console.log("\nResult:", JSON.stringify(result1, null, 2));
+	console.log(
+		"\nResult:",
+		JSON.stringify({ status: state1.status, results: state1.stepResults }, null, 2),
+	);
 	console.log("---\n");
 
 	// Test 2: Failure Handling
 	console.log("--- TEST 2: Failure Handling ---\n");
 
 	const wf2 = client.failureCoordinator.getOrCreate("test-fail");
-	const result2 = await wf2.run("test-fail", { location: "forest-south" });
+	await wf2.start("test-fail", { location: "forest-south" });
+	const state2 = await waitForStatus(wf2);
 
-	console.log("\nResult:", JSON.stringify(result2, null, 2));
+	console.log("\nResult:", JSON.stringify({ status: state2.status, error: state2.error }, null, 2));
 	console.log("---\n");
 
 	// Test 3: Retry Behavior
@@ -216,33 +254,45 @@ async function main() {
 
 	flakyAttempts = 0; // Reset
 	const wf3 = client.retryCoordinator.getOrCreate("test-retry");
-	const result3 = await wf3.run("test-retry", {});
+	await wf3.start("test-retry", {});
+	const state3 = await waitForStatus(wf3);
 
-	console.log("\nResult:", JSON.stringify(result3, null, 2));
+	console.log(
+		"\nResult:",
+		JSON.stringify({ status: state3.status, results: state3.stepResults }, null, 2),
+	);
 	console.log("---\n");
 
 	// Test 4: Skip Step
 	console.log("--- TEST 4: Skip Step ---\n");
 
 	const wf4 = client.skipCoordinator.getOrCreate("test-skip");
-	const result4 = await wf4.run("test-skip", { location: "forest-east" });
+	await wf4.start("test-skip", { location: "forest-east" });
+	const state4 = await waitForStatus(wf4);
 
-	console.log("\nResult:", JSON.stringify(result4, null, 2));
+	console.log(
+		"\nResult:",
+		JSON.stringify({ status: state4.status, results: state4.stepResults }, null, 2),
+	);
 	console.log("---\n");
 
 	// Test 5: Continue on Error (middle step)
 	console.log("--- TEST 5: Continue on Error (middle step) ---\n");
 
 	const wf5 = client.continueOnErrorCoordinator.getOrCreate("test-continue");
-	const result5 = await wf5.run("test-continue", { location: "forest-west" });
+	await wf5.start("test-continue", { location: "forest-west" });
+	const state5 = await waitForStatus(wf5);
 
-	console.log("\nResult:", JSON.stringify(result5, null, 2));
+	console.log(
+		"\nResult:",
+		JSON.stringify({ status: state5.status, results: state5.stepResults }, null, 2),
+	);
 
 	// Assertions for continue-on-error
-	const t5_workflowCompleted = result5.status === "completed";
-	const t5_step2Failed = result5.results?.continueStep?.status === "failed";
-	const t5_step3Ran = result5.results?.checkStep != null;
-	const t5_step3Result = result5.results?.checkStep?.result as
+	const t5_workflowCompleted = state5.status === "completed";
+	const t5_step2Failed = state5.stepResults?.continueStep?.status === "failed";
+	const t5_step3Ran = state5.stepResults?.checkStep != null;
+	const t5_step3Result = state5.stepResults?.checkStep?.result as
 		| {
 				lastStepName: string;
 				step2Status: string;
@@ -278,12 +328,16 @@ async function main() {
 	console.log("--- TEST 6: Continue on Error (last step) ---\n");
 
 	const wf6 = client.continueOnErrorLastCoordinator.getOrCreate("test-continue-last");
-	const result6 = await wf6.run("test-continue-last", { location: "forest-center" });
+	await wf6.start("test-continue-last", { location: "forest-center" });
+	const state6 = await waitForStatus(wf6);
 
-	console.log("\nResult:", JSON.stringify(result6, null, 2));
+	console.log(
+		"\nResult:",
+		JSON.stringify({ status: state6.status, results: state6.stepResults }, null, 2),
+	);
 
-	const t6_workflowCompleted = result6.status === "completed";
-	const t6_step2Failed = result6.results?.continueStep?.status === "failed";
+	const t6_workflowCompleted = state6.status === "completed";
+	const t6_step2Failed = state6.stepResults?.continueStep?.status === "failed";
 
 	const wf6State = await wf6.getState();
 	const t6_noError = wf6State.error === null;
@@ -297,6 +351,30 @@ async function main() {
 	console.log(`  coordinator no failed: ${t6_noFailedStep}`);
 	console.log("---\n");
 
+	// Test 10: Step Timeout (per-step config.timeout)
+	console.log("--- TEST 10: Step Timeout ---\n");
+
+	const wf10 = client.timeoutCoordinator.getOrCreate("test-timeout");
+	await wf10.start("test-timeout", { location: "forest-timeout" });
+	const state10 = await waitForStatus(wf10);
+
+	const t10_failed = state10.status === "failed";
+	const t10_failedStep = state10.failedStep === "slowStep";
+	const t10_errorMsg =
+		typeof state10.error === "string" && state10.error.includes("timed out after 100ms");
+	const t10_firstStepRan = state10.stepResults?.findTree != null;
+	const t10_lastStepSkipped = state10.stepResults?.chopTree == null;
+	const test10Passed =
+		t10_failed && t10_failedStep && t10_errorMsg && t10_firstStepRan && t10_lastStepSkipped;
+
+	console.log(`  status:         ${state10.status}`);
+	console.log(`  failedStep:     ${state10.failedStep}`);
+	console.log(`  error:          ${state10.error}`);
+	console.log(`  findTree ran:   ${t10_firstStepRan}`);
+	console.log(`  chopTree skip:  ${t10_lastStepSkipped}`);
+	console.log(`  ${test10Passed ? "passed" : "FAILED"}`);
+	console.log("---\n");
+
 	// Test 7, 8, 9: Duplicate step name detection (synchronous)
 	const test7Passed = testBuilderRejectsDuplicateStepNames();
 	const test8Passed = testCompilerRejectsDuplicateStepNames();
@@ -307,26 +385,28 @@ async function main() {
 	console.log("PHASE 1 TESTS COMPLETE");
 	console.log("=".repeat(60));
 	console.log("\nResults:");
-	console.log(`  1. Happy Path:      ${result1.status}`);
-	console.log(`  2. Failure:         ${result2.status} (expected: failed)`);
-	console.log(`  3. Retry:           ${result3.status}`);
-	console.log(`  4. Skip:            ${result4.status}`);
+	console.log(`  1. Happy Path:      ${state1.status}`);
+	console.log(`  2. Failure:         ${state2.status} (expected: failed)`);
+	console.log(`  3. Retry:           ${state3.status}`);
+	console.log(`  4. Skip:            ${state4.status}`);
 	console.log(`  5. Continue Error:  ${test5Passed ? "passed" : "FAILED"}`);
 	console.log(`  6. Continue Last:   ${test6Passed ? "passed" : "FAILED"}`);
 	console.log(`  7. Builder Dup:     ${test7Passed ? "passed" : "FAILED"}`);
 	console.log(`  8. Compiler Dup:    ${test8Passed ? "passed" : "FAILED"}`);
 	console.log(`  9. Coordinator Dup: ${test9Passed ? "passed" : "FAILED"}`);
+	console.log(`  10. Step Timeout:   ${test10Passed ? "passed" : "FAILED"}`);
 
 	const allPassed =
-		result1.status === "completed" &&
-		result2.status === "failed" &&
-		result3.status === "completed" &&
-		result4.status === "completed" &&
+		state1.status === "completed" &&
+		state2.status === "failed" &&
+		state3.status === "completed" &&
+		state4.status === "completed" &&
 		test5Passed &&
 		test6Passed &&
 		test7Passed &&
 		test8Passed &&
-		test9Passed;
+		test9Passed &&
+		test10Passed;
 
 	console.log(`\n${allPassed ? "✓ All tests passed!" : "✗ Some tests failed"}\n`);
 

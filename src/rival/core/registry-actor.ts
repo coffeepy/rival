@@ -5,12 +5,12 @@
  *
  * Two components:
  * 1. WorkflowRegistry class - In-memory storage for compiled workflows
- * 2. createRegistryActor - Rivet actor for runtime operations
+ * 2. createRegistryActor - Rivet actor for runtime operations (live-query pattern)
  */
 
 import { actor } from "rivetkit";
-import type { CompiledWorkflow, WorkflowMetadata } from "../types";
-import type { WorkflowExecutionResult } from "./workflow-coordinator";
+import type { CompiledWorkflow, StepResult, WorkflowMetadata } from "../types";
+import type { WorkflowCoordinatorState } from "./workflow-coordinator";
 
 /**
  * In-memory registry for compiled workflows.
@@ -96,15 +96,30 @@ export class WorkflowRegistry {
 export const workflowRegistry = new WorkflowRegistry();
 
 /**
- * Information about an active workflow run.
+ * Lightweight launch metadata stored in the registry actor.
+ * Status is NOT stored here — it's queried live from the coordinator.
  */
 export interface ActiveRun {
 	runId: string;
 	workflowName: string;
-	status: "pending" | "running" | "completed" | "failed" | "cancelled";
 	startedAt: number;
-	completedAt?: number;
 	input: unknown;
+}
+
+/**
+ * Combined view returned by getRunStatus — merges launch metadata
+ * with live coordinator state.
+ */
+export interface RunStatusInfo {
+	runId: string;
+	workflowName: string;
+	status: WorkflowCoordinatorState["status"];
+	startedAt: number;
+	completedAt: number | null;
+	input: unknown;
+	stepResults: Record<string, StepResult>;
+	error: string | null;
+	failedStep: string | null;
 }
 
 /**
@@ -124,12 +139,44 @@ export interface LaunchResult {
 	error?: string;
 }
 
+/** Type alias for coordinator actor handle. */
+type CoordinatorHandle = {
+	start: (id: string, input: unknown) => Promise<{ started: true }>;
+	getState: () => Promise<WorkflowCoordinatorState & { duration: number | null }>;
+	cancel: () => Promise<{ cancelled: boolean }>;
+};
+
 /**
  * Creates the registry actor for runtime workflow operations.
+ * Uses the live-query pattern: status is always fetched from the coordinator.
  *
  * @param registry - The workflow registry to use
  */
 export function createRegistryActor(registry: WorkflowRegistry = workflowRegistry) {
+	/**
+	 * Helper to resolve the coordinator actor name for a given workflow.
+	 * Always derives from the registry class (closure), never from serialized state.
+	 */
+	function resolveCoordinatorName(workflowName: string): string | undefined {
+		return registry.get(workflowName)?.coordinatorActorName;
+	}
+
+	/** Helper to get a coordinator handle from the client. */
+	function getCoordinator(
+		client: Record<string, unknown>,
+		workflowName: string,
+		runId: string,
+	): CoordinatorHandle | undefined {
+		const coordinatorActorName = resolveCoordinatorName(workflowName);
+		if (!coordinatorActorName) return undefined;
+
+		const coordinatorType = client[coordinatorActorName] as
+			| { getOrCreate: (key: string) => CoordinatorHandle }
+			| undefined;
+
+		return coordinatorType?.getOrCreate(runId);
+	}
+
 	return actor({
 		state: {
 			activeRuns: {} as Record<string, ActiveRun>,
@@ -145,6 +192,7 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 
 			/**
 			 * Launch a workflow by name.
+			 * Calls coordinator.start() (returns immediately) — no fire-and-forget.
 			 */
 			launch: async (
 				c,
@@ -166,56 +214,37 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 				const id =
 					runId ?? `${workflowName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-				// Record the run
-				c.state.activeRuns[id] = {
-					runId: id,
-					workflowName,
-					status: "running",
-					startedAt: Date.now(),
-					input,
-				};
+				const client = c.client() as Record<string, unknown>;
+				const coordinator = getCoordinator(client, workflowName, id);
 
-				// Get the coordinator and start it
-				const client = c.client();
-				const coordinatorType = (client as Record<string, unknown>)[
-					workflow.coordinatorActorName
-				] as
-					| {
-							getOrCreate: (key: string) => {
-								run: (id: string, input: unknown) => Promise<WorkflowExecutionResult>;
-							};
-					  }
-					| undefined;
-
-				if (!coordinatorType) {
-					c.state.activeRuns[id].status = "failed";
+				if (!coordinator) {
 					return {
 						runId: id,
 						workflowName,
 						status: "failed",
-						error: `Coordinator "${workflow.coordinatorActorName}" not found in registry`,
+						error: `Coordinator for "${workflowName}" not found in registry`,
 					};
 				}
 
-				// Start the workflow asynchronously
-				const coordinator = coordinatorType.getOrCreate(id);
+				// Start the workflow — coordinator.start() returns immediately
+				try {
+					await coordinator.start(id, input);
+				} catch (err) {
+					return {
+						runId: id,
+						workflowName,
+						status: "failed",
+						error: err instanceof Error ? err.message : String(err),
+					};
+				}
 
-				// Don't await - let it run in background
-				coordinator
-					.run(id, input)
-					.then((result) => {
-						if (c.state.activeRuns[id]) {
-							c.state.activeRuns[id].status = result.status;
-							c.state.activeRuns[id].completedAt = Date.now();
-						}
-					})
-					.catch((err: Error) => {
-						if (c.state.activeRuns[id]) {
-							c.state.activeRuns[id].status = "failed";
-							c.state.activeRuns[id].completedAt = Date.now();
-						}
-						console.error(`[Registry] Workflow ${id} failed:`, err);
-					});
+				// Record launch metadata (no status — queried live)
+				c.state.activeRuns[id] = {
+					runId: id,
+					workflowName,
+					startedAt: Date.now(),
+					input,
+				};
 
 				return {
 					runId: id,
@@ -225,21 +254,117 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 			},
 
 			/**
-			 * Get the status of a specific run.
+			 * Get the status of a specific run by querying the coordinator live.
 			 */
-			getRunStatus: (c, runId: string): ActiveRun | undefined => {
-				return c.state.activeRuns[runId];
+			getRunStatus: async (c, runId: string): Promise<RunStatusInfo | undefined> => {
+				const run = c.state.activeRuns[runId];
+				if (!run) {
+					return undefined;
+				}
+
+				const client = c.client() as Record<string, unknown>;
+				const coordinator = getCoordinator(client, run.workflowName, runId);
+
+				if (!coordinator) {
+					return {
+						runId,
+						workflowName: run.workflowName,
+						status: "failed",
+						startedAt: run.startedAt,
+						completedAt: null,
+						input: run.input,
+						stepResults: {},
+						error: `Coordinator "${run.workflowName}" unreachable`,
+						failedStep: null,
+					};
+				}
+
+				try {
+					const coordState = await coordinator.getState();
+					return {
+						runId,
+						workflowName: run.workflowName,
+						status: coordState.status,
+						startedAt: coordState.startedAt ?? run.startedAt,
+						completedAt: coordState.completedAt,
+						input: coordState.input,
+						stepResults: coordState.stepResults,
+						error: coordState.error,
+						failedStep: coordState.failedStep,
+					};
+				} catch (err) {
+					return {
+						runId,
+						workflowName: run.workflowName,
+						status: "failed",
+						startedAt: run.startedAt,
+						completedAt: null,
+						input: run.input,
+						stepResults: {},
+						error: `Coordinator query failed: ${err instanceof Error ? err.message : String(err)}`,
+						failedStep: null,
+					};
+				}
 			},
 
 			/**
 			 * Get all active runs, optionally filtered by workflow name.
+			 * Queries each coordinator for live status.
 			 */
-			getActiveRuns: (c, workflowName?: string): ActiveRun[] => {
-				const runs = Object.values(c.state.activeRuns);
+			getActiveRuns: async (c, workflowName?: string): Promise<RunStatusInfo[]> => {
+				let runs = Object.values(c.state.activeRuns);
 				if (workflowName) {
-					return runs.filter((r) => r.workflowName === workflowName);
+					runs = runs.filter((r) => r.workflowName === workflowName);
 				}
-				return runs;
+
+				const client = c.client() as Record<string, unknown>;
+
+				return Promise.all(
+					runs.map(async (run): Promise<RunStatusInfo> => {
+						const coordinator = getCoordinator(client, run.workflowName, run.runId);
+
+						if (!coordinator) {
+							return {
+								runId: run.runId,
+								workflowName: run.workflowName,
+								status: "failed",
+								startedAt: run.startedAt,
+								completedAt: null,
+								input: run.input,
+								stepResults: {},
+								error: `Coordinator "${run.workflowName}" unreachable`,
+								failedStep: null,
+							};
+						}
+
+						try {
+							const coordState = await coordinator.getState();
+							return {
+								runId: run.runId,
+								workflowName: run.workflowName,
+								status: coordState.status,
+								startedAt: coordState.startedAt ?? run.startedAt,
+								completedAt: coordState.completedAt,
+								input: coordState.input,
+								stepResults: coordState.stepResults,
+								error: coordState.error,
+								failedStep: coordState.failedStep,
+							};
+						} catch {
+							return {
+								runId: run.runId,
+								workflowName: run.workflowName,
+								status: "failed",
+								startedAt: run.startedAt,
+								completedAt: null,
+								input: run.input,
+								stepResults: {},
+								error: "Coordinator unreachable",
+								failedStep: null,
+							};
+						}
+					}),
+				);
 			},
 
 			/**
@@ -251,50 +376,57 @@ export function createRegistryActor(registry: WorkflowRegistry = workflowRegistr
 					return { success: false, error: `Run "${runId}" not found` };
 				}
 
-				if (run.status !== "running") {
-					return { success: false, error: `Run "${runId}" is not running (status: ${run.status})` };
-				}
+				const client = c.client() as Record<string, unknown>;
+				const coordinator = getCoordinator(client, run.workflowName, runId);
 
-				const workflow = registry.get(run.workflowName);
-				if (!workflow) {
-					return { success: false, error: `Workflow "${run.workflowName}" not found` };
-				}
-
-				// Get the coordinator and cancel it
-				const client = c.client();
-				const coordinatorType = (client as Record<string, unknown>)[
-					workflow.coordinatorActorName
-				] as
-					| {
-							getOrCreate: (key: string) => {
-								cancel: () => Promise<void>;
-							};
-					  }
-					| undefined;
-
-				if (!coordinatorType) {
+				if (!coordinator) {
 					return { success: false, error: "Coordinator not found" };
 				}
 
-				const coordinator = coordinatorType.getOrCreate(runId);
-				await coordinator.cancel();
+				const cancelResult = await coordinator.cancel();
 
-				c.state.activeRuns[runId].status = "cancelled";
-				c.state.activeRuns[runId].completedAt = Date.now();
+				if (cancelResult.cancelled) {
+					return { success: true };
+				}
 
-				return { success: true };
+				return { success: false, error: `Run "${runId}" is no longer running` };
 			},
 
 			/**
 			 * Clean up completed runs older than the specified age.
+			 * Queries each coordinator to check terminal status.
 			 */
-			cleanup: (c, maxAgeMs = 3600000): { removed: number } => {
+			cleanup: async (c, maxAgeMs = 3600000): Promise<{ removed: number }> => {
 				const now = Date.now();
-				let removed = 0;
+				const client = c.client() as Record<string, unknown>;
+				const entries = Object.entries(c.state.activeRuns);
 
-				for (const [runId, run] of Object.entries(c.state.activeRuns)) {
-					if (run.status !== "running" && run.completedAt && now - run.completedAt > maxAgeMs) {
-						delete c.state.activeRuns[runId];
+				// Query all coordinators in parallel, collect IDs to remove
+				const idsToRemove = await Promise.all(
+					entries.map(async ([runId, run]): Promise<string | null> => {
+						const coordinator = getCoordinator(client, run.workflowName, runId);
+						if (!coordinator) {
+							return now - run.startedAt > maxAgeMs ? runId : null;
+						}
+
+						try {
+							const coordState = await coordinator.getState();
+							const isTerminal = ["completed", "failed", "cancelled"].includes(coordState.status);
+							if (isTerminal && coordState.completedAt && now - coordState.completedAt > maxAgeMs) {
+								return runId;
+							}
+							return null;
+						} catch {
+							return now - run.startedAt > maxAgeMs ? runId : null;
+						}
+					}),
+				);
+
+				// Apply removals synchronously
+				let removed = 0;
+				for (const id of idsToRemove) {
+					if (id) {
+						delete c.state.activeRuns[id];
 						removed++;
 					}
 				}

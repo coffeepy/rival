@@ -2,7 +2,11 @@
  * Workflow Coordinator Factory
  *
  * Creates the coordinator actor that orchestrates step execution.
- * Follows Rivet's Coordinator/Data pattern.
+ * Uses a schedule-driven state machine: each step is its own short-lived
+ * action invocation, chained via c.schedule.after(1, "processNextStep").
+ *
+ * This avoids RivetKit's actionTimeout (60s) by never holding a single
+ * action open for the entire workflow.
  */
 
 import { actor } from "rivetkit";
@@ -11,6 +15,9 @@ import type { PlanNode, StepPlanNode, StepResult } from "../types";
 import { planSchema } from "../types";
 import { buildStepContext } from "./context-builder";
 import type { ExecuteContext, StepExecutionResult } from "./step-actor";
+
+/** Default timeout for a single step execution (ms). */
+const STEP_TIMEOUT_MS = 55_000;
 
 /**
  * Workflow coordinator state.
@@ -29,6 +36,8 @@ export interface WorkflowCoordinatorState {
 
 /**
  * Result of workflow execution.
+ * Kept for consumers who want to construct it from getState().
+ * No action returns this directly anymore.
  */
 export interface WorkflowExecutionResult {
 	status: "completed" | "failed" | "cancelled";
@@ -71,16 +80,17 @@ export function createWorkflowCoordinator(
 
 		actions: {
 			/**
-			 * Run the workflow with the given input.
+			 * Start the workflow. Returns immediately.
+			 * Kicks off the first step via c.schedule.after(1, "processNextStep").
 			 */
-			run: async (
-				c,
-				workflowId: string,
-				rawInput: unknown = {},
-			): Promise<WorkflowExecutionResult> => {
-				// Prevent double-run
-				if (c.state.status === "running") {
-					throw new Error("Workflow already running");
+			start: async (c, workflowId: string, rawInput: unknown = {}): Promise<{ started: true }> => {
+				// Only allow starting from "pending" state
+				if (c.state.status !== "pending") {
+					throw new Error(
+						c.state.status === "running"
+							? "Workflow already running"
+							: `Cannot start workflow in "${c.state.status}" state`,
+					);
 				}
 
 				// Validate input if schema provided
@@ -90,7 +100,8 @@ export function createWorkflowCoordinator(
 					if (!parseResult.success) {
 						c.state.status = "failed";
 						c.state.error = `Input validation failed: ${parseResult.error.message}`;
-						return { status: "failed", error: c.state.error };
+						c.state.completedAt = Date.now();
+						throw new Error(c.state.error);
 					}
 					input = parseResult.data;
 				}
@@ -100,29 +111,59 @@ export function createWorkflowCoordinator(
 				c.state.workflowId = workflowId;
 				c.state.input = input;
 				c.state.startedAt = Date.now();
+				c.state.completedAt = null;
+				c.state.error = null;
+				c.state.failedStep = null;
 				c.state.stepResults = {};
 				c.state.currentStepIndex = 0;
 
 				const stepNodes = plan.filter((n): n is StepPlanNode => n.type === "step");
 				const stepNames = stepNodes.map((n) => n.name);
 
-				console.log(`[${workflowName}/${workflowId}] Starting workflow`);
-				console.log(`[${workflowName}/${workflowId}] Plan: ${stepNames.join(" → ")}`);
+				c.log.info(`[${workflowName}/${workflowId}] Starting workflow`);
+				c.log.info(`[${workflowName}/${workflowId}] Plan: ${stepNames.join(" → ")}`);
 
-				const client = c.client();
+				// Schedule first tick — LAST, after all state writes
+				await c.schedule.after(1, "processNextStep");
 
-				// Execute plan nodes sequentially
-				for (let i = 0; i < plan.length; i++) {
-					const node = plan[i];
-					if (!node || node.type !== "step") {
-						// TODO: Handle branch, loop, parallel in future phases
-						continue;
+				return { started: true };
+			},
+
+			/**
+			 * Process exactly ONE step, then schedule the next tick.
+			 * Entire body wrapped in try-catch to prevent permanent stall.
+			 */
+			processNextStep: async (c): Promise<void> => {
+				let node: StepPlanNode | undefined;
+				try {
+					// Guard: not running → bail out
+					if (c.state.status !== "running") {
+						return;
 					}
 
-					c.state.currentStepIndex = i;
-					console.log(`[${workflowName}/${workflowId}] Executing: ${node.name}`);
+					// Find the next step node (skip non-step plan nodes)
+					while (c.state.currentStepIndex < plan.length) {
+						const candidate = plan[c.state.currentStepIndex];
+						if (candidate && candidate.type === "step") {
+							node = candidate;
+							break;
+						}
+						// Skip non-step nodes (branch, loop, parallel — future phases)
+						c.state.currentStepIndex++;
+					}
 
-					// Get the step actor type from client using dynamic property access
+					// No more steps → workflow completed
+					if (!node) {
+						c.state.status = "completed";
+						c.state.completedAt = Date.now();
+						c.log.info(`[${workflowName}/${c.state.workflowId}] Workflow completed!`);
+						return;
+					}
+
+					c.log.info(`[${workflowName}/${c.state.workflowId}] Executing: ${node.name}`);
+
+					// Look up step actor
+					const client = c.client();
 					const stepActorType = (client as Record<string, unknown>)[node.actorType] as
 						| {
 								getOrCreate: (key: string) => {
@@ -141,13 +182,12 @@ export function createWorkflowCoordinator(
 						c.state.error = `Actor type "${node.actorType}" not found in registry`;
 						c.state.failedStep = node.name;
 						c.state.completedAt = Date.now();
-
-						console.log(`[${workflowName}/${workflowId}] Failed: ${c.state.error}`);
-						return { status: "failed", error: c.state.error, failedStep: node.name };
+						c.log.info(`[${workflowName}/${c.state.workflowId}] Failed: ${c.state.error}`);
+						return;
 					}
 
 					// Create step instance with unique key
-					const stepKey = `${workflowId}-${node.name}`;
+					const stepKey = `${c.state.workflowId}-${node.name}`;
 					const stepActor = stepActorType.getOrCreate(stepKey);
 
 					// Build context from current workflow state
@@ -156,51 +196,87 @@ export function createWorkflowCoordinator(
 						stepResults: c.state.stepResults,
 					});
 
-					// Execute step
-					const result = await stepActor.execute(context, node.config, workflowId, node.name);
+					// Execute step with explicit timeout (scheduled actions bypass actionTimeout)
+					const stepTimeoutMs = node.config?.timeout ?? STEP_TIMEOUT_MS;
+					let timeoutHandle: ReturnType<typeof setTimeout>;
+					const timeoutPromise = new Promise<never>((_, reject) => {
+						timeoutHandle = setTimeout(
+							() => reject(new Error(`Step "${node!.name}" timed out after ${stepTimeoutMs}ms`)),
+							stepTimeoutMs,
+						);
+					});
 
-					// Handle result
-					if (result.status === "failed" && !result.continueOnError) {
+					let stepResult: StepExecutionResult;
+					try {
+						stepResult = await Promise.race([
+							stepActor.execute(context, node.config, c.state.workflowId, node.name),
+							timeoutPromise,
+						]);
+					} finally {
+						clearTimeout(timeoutHandle!);
+					}
+
+					// Post-await cancellation check
+					if (c.state.status === "cancelled") {
+						// Store the result of the step that was running when cancel hit
+						c.state.stepResults[node.name] = {
+							result: stepResult.result,
+							state: stepResult.stepState,
+							status: stepResult.status,
+						};
+						c.log.info(
+							`[${workflowName}/${c.state.workflowId}] Workflow cancelled after step: ${node.name}`,
+						);
+						return; // Don't schedule further
+					}
+
+					// Handle failure
+					if (stepResult.status === "failed" && !stepResult.continueOnError) {
 						c.state.status = "failed";
-						c.state.error = result.error ?? "Step failed";
+						c.state.error = stepResult.error ?? "Step failed";
 						c.state.failedStep = node.name;
 						c.state.completedAt = Date.now();
-
-						console.log(`[${workflowName}/${workflowId}] Failed at step: ${node.name}`);
-						return {
-							status: "failed",
-							error: result.error,
-							failedStep: node.name,
-							results: c.state.stepResults,
-						};
+						c.log.info(`[${workflowName}/${c.state.workflowId}] Failed at step: ${node.name}`);
+						return;
 					}
 
-					if (result.status === "failed" && result.continueOnError) {
+					if (stepResult.status === "failed" && stepResult.continueOnError) {
 						c.state.stepResults[node.name] = {
-							result: result.result,
-							state: result.stepState,
+							result: stepResult.result,
+							state: stepResult.stepState,
 							status: "failed",
 						};
-						console.log(`[${workflowName}/${workflowId}] Step failed (continue): ${node.name}`);
-						continue;
+						c.log.info(
+							`[${workflowName}/${c.state.workflowId}] Step failed (continue): ${node.name}`,
+						);
+					} else {
+						// Store step result
+						c.state.stepResults[node.name] = {
+							result: stepResult.result,
+							state: stepResult.stepState,
+							status: stepResult.status,
+						};
+						c.log.info(`[${workflowName}/${c.state.workflowId}] Completed: ${node.name}`);
 					}
 
-					// Store step result
-					c.state.stepResults[node.name] = {
-						result: result.result,
-						state: result.stepState,
-						status: result.status,
-					};
+					// Advance to next step
+					c.state.currentStepIndex++;
 
-					console.log(`[${workflowName}/${workflowId}] Completed: ${node.name}`);
+					// Schedule next tick — LAST, after all state writes and cancellation checks
+					await c.schedule.after(1, "processNextStep");
+				} catch (err) {
+					// Catch-all: prevent permanent "running" stall
+					const message = err instanceof Error ? err.message : String(err);
+					c.state.status = "failed";
+					c.state.error = message;
+					if (node) {
+						c.state.failedStep = node.name;
+					}
+					c.state.completedAt = Date.now();
+					c.log.info(
+						`[${workflowName}/${c.state.workflowId}] Unexpected error in processNextStep: ${message}`,
+					);
 				}
-
-				// All steps completed
-				c.state.status = "completed";
-				c.state.completedAt = Date.now();
-
-				console.log(`[${workflowName}/${workflowId}] Workflow completed!`);
-				return { status: "completed", results: c.state.stepResults };
 			},
 
 			/**
@@ -222,18 +298,18 @@ export function createWorkflowCoordinator(
 
 			/**
 			 * Cancel the workflow.
+			 * Returns { cancelled: true } if the workflow was running and is now cancelled.
 			 */
-			cancel: async (c) => {
+			cancel: async (c): Promise<{ cancelled: boolean }> => {
 				if (c.state.status !== "running") {
-					return;
+					return { cancelled: false };
 				}
 
 				c.state.status = "cancelled";
 				c.state.completedAt = Date.now();
 
-				// Note: Cannot truly cancel in-flight step execution,
-				// but we mark workflow as cancelled to prevent further steps.
-				console.log(`[${workflowName}/${c.state.workflowId}] Workflow cancelled`);
+				c.log.info(`[${workflowName}/${c.state.workflowId}] Workflow cancelled`);
+				return { cancelled: true };
 			},
 		},
 	});

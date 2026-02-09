@@ -3,22 +3,24 @@
  *
  * Tests the workflow registry functionality:
  * - WorkflowRegistry class
- * - createRegistryActor
+ * - createRegistryActor (live-query pattern)
  * - Workflow launching and tracking
  * - Run cancellation
  *
  * Run with: bun test/phase3.test.ts
  */
 
-import { setup } from "rivetkit";
+import { createMemoryDriver, setup } from "rivetkit";
 import { z } from "zod";
 import {
+	type RunStatusInfo,
 	type StepContext,
 	WorkflowRegistry,
 	compileWorkflow,
 	createRegistryActor,
 	createWorkflow,
 } from "../src/rival";
+import { waitForStatus } from "./helpers";
 
 // =============================================================================
 // STEP FUNCTIONS
@@ -168,6 +170,8 @@ async function testRegistryActor() {
 	});
 
 	const { client } = rivet.start({
+		// Memory driver keeps the registry + workflow actors fully in-process for tests.
+		driver: createMemoryDriver(),
 		disableDefaultServer: true,
 		noWelcome: true,
 	});
@@ -181,13 +185,14 @@ async function testRegistryActor() {
 				input: unknown,
 				runId?: string,
 			) => Promise<{ runId: string; status: string; error?: string }>;
-			getActiveRuns: (name?: string) => Promise<{ runId: string; status: string }[]>;
-			getRunStatus: (runId: string) => Promise<{ runId: string; status: string } | undefined>;
+			getActiveRuns: (name?: string) => Promise<RunStatusInfo[]>;
+			getRunStatus: (runId: string) => Promise<RunStatusInfo | undefined>;
 			cancel: (runId: string) => Promise<{ success: boolean; error?: string }>;
 		};
 	};
 
 	const reg = registryInstance.getOrCreate("main");
+	// "main" is the registry actor key. In production you might scope this by tenant.
 
 	// Test list
 	const workflows = await reg.list();
@@ -209,18 +214,28 @@ async function testRegistryActor() {
 		throw new Error(`Expected 'started', got '${launchResult.status}'`);
 	}
 
-	// Wait for workflow to complete
-	await new Promise((resolve) => setTimeout(resolve, 200));
+	// Poll for workflow completion via live-query
+	// This mirrors frontend behavior: poll run status instead of expecting launch() to block.
+	const pollUntilDone = async (runId: string, timeoutMs = 5000): Promise<RunStatusInfo> => {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			const status = await reg.getRunStatus(runId);
+			if (status && ["completed", "failed", "cancelled"].includes(status.status)) {
+				return status;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		throw new Error(`Timed out waiting for run ${runId}`);
+	};
 
-	// Test getRunStatus
-	const runStatus = await reg.getRunStatus("test-run-1");
-	console.log("Run status:", runStatus);
+	const runStatus = await pollUntilDone("test-run-1");
+	console.log("Run status:", { status: runStatus.status, workflowName: runStatus.workflowName });
 
-	if (!runStatus || runStatus.status !== "completed") {
-		throw new Error(`Expected 'completed', got '${runStatus?.status}'`);
+	if (runStatus.status !== "completed") {
+		throw new Error(`Expected 'completed', got '${runStatus.status}'`);
 	}
 
-	// Test getActiveRuns
+	// Test getActiveRuns (now returns RunStatusInfo with live data)
 	const activeRuns = await reg.getActiveRuns();
 	console.log(`Active runs: ${activeRuns.length}`);
 
@@ -273,6 +288,8 @@ async function testWorkflowLaunching() {
 	});
 
 	const { client } = rivet.start({
+		// Same driver choice here so launch/status semantics are tested without external infra.
+		driver: createMemoryDriver(),
 		disableDefaultServer: true,
 		noWelcome: true,
 	});
@@ -284,7 +301,7 @@ async function testWorkflowLaunching() {
 				input: unknown,
 				runId?: string,
 			) => Promise<{ runId: string; status: string }>;
-			getRunStatus: (runId: string) => Promise<{ runId: string; status: string } | undefined>;
+			getRunStatus: (runId: string) => Promise<RunStatusInfo | undefined>;
 		};
 	};
 
@@ -302,10 +319,18 @@ async function testWorkflowLaunching() {
 		throw new Error(`Expected started, got ${result.status}`);
 	}
 
-	// Wait for completion
-	await new Promise((resolve) => setTimeout(resolve, 100));
+	// Poll for completion via live-query
+	// Registry launch returns quickly; the coordinator advances asynchronously.
+	const deadline = Date.now() + 5000;
+	let status: RunStatusInfo | undefined;
+	while (Date.now() < deadline) {
+		status = await instance.getRunStatus("user-run-1");
+		if (status && ["completed", "failed", "cancelled"].includes(status.status)) {
+			break;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
 
-	const status = await instance.getRunStatus("user-run-1");
 	console.log("Final status:", status?.status);
 
 	if (status?.status !== "completed") {
@@ -313,6 +338,146 @@ async function testWorkflowLaunching() {
 	}
 
 	console.log("\n[Workflow Launching tests passed]\n");
+	return true;
+}
+
+// =============================================================================
+// TEST: CANCELLATION
+// =============================================================================
+
+async function testCancellation() {
+	console.log("--- TEST: Cancellation ---\n");
+
+	const registry = new WorkflowRegistry();
+
+	// Create a deferred promise (barrier) for deterministic cancellation testing
+	// Barrier lets us guarantee cancel is sent while step 1 is in-flight.
+	let releaseBarrier!: () => void;
+	const barrier = new Promise<void>((resolve) => {
+		releaseBarrier = resolve;
+	});
+
+	// Step that blocks on the barrier
+	function blockingStep({ log }: StepContext) {
+		log.info("Blocking step waiting on barrier...");
+		return barrier.then(() => {
+			log.info("Blocking step released");
+			return { blocked: true, released: true };
+		});
+	}
+
+	function stepAfterBlock({ log }: StepContext) {
+		log.info("Step after block - should NOT run");
+		return { afterBlock: true };
+	}
+
+	function finalStep({ log }: StepContext) {
+		log.info("Final step - should NOT run");
+		return { final: true };
+	}
+
+	const cancelWorkflow = compileWorkflow(
+		createWorkflow("cancelFlow").step(blockingStep).step(stepAfterBlock).step(finalStep).build(),
+	);
+
+	registry.register(cancelWorkflow);
+
+	const registryActor = createRegistryActor(registry);
+
+	const rivet = setup({
+		use: {
+			...registry.getAllActors(),
+			workflowRegistry: registryActor,
+		} as Parameters<typeof setup>[0]["use"],
+	});
+
+	const { client } = rivet.start({
+		// Keep cancellation race test deterministic by running in a local memory runtime.
+		driver: createMemoryDriver(),
+		disableDefaultServer: true,
+		noWelcome: true,
+	});
+
+	const reg = (client as Record<string, unknown>).workflowRegistry as {
+		getOrCreate: (id: string) => {
+			launch: (
+				name: string,
+				input: unknown,
+				runId?: string,
+			) => Promise<{ runId: string; status: string }>;
+			getRunStatus: (runId: string) => Promise<RunStatusInfo | undefined>;
+			cancel: (runId: string) => Promise<{ success: boolean; error?: string }>;
+		};
+	};
+
+	const instance = reg.getOrCreate("main");
+
+	// Launch the workflow - step 1 will block on the barrier
+	console.log("Launching cancelFlow...");
+	const launchResult = await instance.launch("cancelFlow", {}, "cancel-run-1");
+	if (launchResult.status !== "started") {
+		throw new Error(`Expected 'started', got '${launchResult.status}'`);
+	}
+
+	// Give the workflow time to reach the blocking step
+	await new Promise((resolve) => setTimeout(resolve, 50));
+
+	// Cancel while step 1 is blocked
+	console.log("Cancelling workflow while step 1 is blocked...");
+	const cancelResult = await instance.cancel("cancel-run-1");
+	console.log("Cancel result:", cancelResult);
+
+	if (!cancelResult.success) {
+		throw new Error(`Cancel should have succeeded, got error: ${cancelResult.error}`);
+	}
+
+	// Release the barrier so the blocking step can finish
+	releaseBarrier();
+
+	// Poll getRunStatus for cancelled status (live-query)
+	const deadline = Date.now() + 5000;
+	let finalStatus: RunStatusInfo | undefined;
+	while (Date.now() < deadline) {
+		finalStatus = await instance.getRunStatus("cancel-run-1");
+		if (finalStatus && ["completed", "failed", "cancelled"].includes(finalStatus.status)) {
+			break;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+
+	console.log("Final status:", finalStatus?.status);
+
+	if (finalStatus?.status !== "cancelled") {
+		throw new Error(`Expected 'cancelled', got '${finalStatus?.status}'`);
+	}
+
+	// Verify step results via coordinator directly
+	// Querying coordinator state confirms orchestration-level behavior, not only registry metadata.
+	const coordinatorType = (client as Record<string, unknown>).cancelFlow_coordinator as {
+		getOrCreate: (id: string) => {
+			getState: () => Promise<{
+				status: string;
+				stepResults: Record<string, unknown>;
+			}>;
+		};
+	};
+
+	const coordState = await coordinatorType.getOrCreate("cancel-run-1").getState();
+	console.log("Coordinator status:", coordState.status);
+	console.log("Step results keys:", Object.keys(coordState.stepResults));
+
+	if (coordState.status !== "cancelled") {
+		throw new Error(`Coordinator status should be 'cancelled', got '${coordState.status}'`);
+	}
+
+	// Only blockingStep should have a result (steps 2 and 3 should not have run)
+	const resultKeys = Object.keys(coordState.stepResults);
+	if (resultKeys.length !== 1 || resultKeys[0] !== "blockingStep") {
+		throw new Error(`Expected only 'blockingStep' in results, got: ${resultKeys.join(", ")}`);
+	}
+	console.log("Correctly only blockingStep has results (steps 2 and 3 never ran)");
+
+	console.log("\n[Cancellation tests passed]\n");
 	return true;
 }
 
@@ -346,6 +511,13 @@ async function main() {
 	} catch (e) {
 		console.error("Workflow Launching test failed:", e);
 		results.workflowLaunching = false;
+	}
+
+	try {
+		results.cancellation = await testCancellation();
+	} catch (e) {
+		console.error("Cancellation test failed:", e);
+		results.cancellation = false;
 	}
 
 	// Summary
