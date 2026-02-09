@@ -1,0 +1,144 @@
+/**
+ * Plan Types
+ *
+ * The Plan (AST) drives both execution and UI rendering.
+ * References actor type names (strings), not functions.
+ */
+
+import { z } from "zod";
+import type { StepConfig } from "./step";
+
+/**
+ * A step node in the plan.
+ */
+export interface StepPlanNode {
+	type: "step";
+	/** Human-readable step name */
+	name: string;
+	/** Actor type name (used with client[actorType].getOrCreate) */
+	actorType: string;
+	/** Step configuration (timeout, retry, etc.) */
+	config?: StepConfig;
+}
+
+/**
+ * A branch node (if/then/else) in the plan.
+ * Future phase - not implemented in Phase 1.
+ */
+export interface BranchPlanNode {
+	type: "branch";
+	name: string;
+	/** Actor type for condition evaluation */
+	conditionActorType: string;
+	/** Nodes to execute if condition is true */
+	then: PlanNode[];
+	/** Nodes to execute if condition is false */
+	else: PlanNode[];
+}
+
+/**
+ * A loop node in the plan.
+ * Future phase - not implemented in Phase 1.
+ */
+export interface LoopPlanNode {
+	type: "loop";
+	name: string;
+	/** Actor type for condition evaluation */
+	conditionActorType: string;
+	/** Nodes to execute each iteration */
+	body: PlanNode[];
+}
+
+/**
+ * A parallel execution node in the plan.
+ * Future phase - not implemented in Phase 1.
+ */
+export interface ParallelPlanNode {
+	type: "parallel";
+	name: string;
+	/** Nodes to execute concurrently */
+	children: PlanNode[];
+}
+
+/**
+ * A nested workflow node in the plan.
+ * Future phase - not implemented in Phase 1.
+ */
+export interface WorkflowPlanNode {
+	type: "workflow";
+	name: string;
+	/** Actor type for the nested workflow coordinator */
+	coordinatorActorType: string;
+}
+
+/**
+ * Union of all plan node types.
+ * The plan is serializable (no functions) so it can be sent to UI.
+ */
+export type PlanNode =
+	| StepPlanNode
+	| BranchPlanNode
+	| LoopPlanNode
+	| ParallelPlanNode
+	| WorkflowPlanNode;
+
+// =============================================================================
+// Zod Schemas — validate plan structure and enforce unique step names
+// =============================================================================
+
+export const stepPlanNodeSchema = z.object({
+	type: z.literal("step"),
+	name: z.string().min(1),
+	actorType: z.string().min(1),
+	config: z.any().optional(),
+});
+
+const planNodeSchema = z.discriminatedUnion("type", [
+	stepPlanNodeSchema,
+	z.object({
+		type: z.literal("branch"),
+		name: z.string().min(1),
+		conditionActorType: z.string().min(1),
+		// biome-ignore lint/suspicious/noThenProperty: "then" is the correct name for if/then/else branch nodes
+		then: z.array(z.any()),
+		else: z.array(z.any()),
+	}),
+	z.object({
+		type: z.literal("loop"),
+		name: z.string().min(1),
+		conditionActorType: z.string().min(1),
+		body: z.array(z.any()),
+	}),
+	z.object({
+		type: z.literal("parallel"),
+		name: z.string().min(1),
+		children: z.array(z.any()),
+	}),
+	z.object({
+		type: z.literal("workflow"),
+		name: z.string().min(1),
+		coordinatorActorType: z.string().min(1),
+	}),
+]);
+
+/**
+ * Zod schema for a plan (array of PlanNodes) with unique step name enforcement.
+ *
+ * Use `planSchema.parse(plan)` to validate structure AND catch duplicate names.
+ */
+export const planSchema = z.array(planNodeSchema).superRefine((nodes, ctx) => {
+	const seen = new Set<string>();
+	for (let i = 0; i < nodes.length; i++) {
+		const node = nodes[i];
+		if (node.type === "step") {
+			if (seen.has(node.name)) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: `Duplicate step name "${node.name}". Step names must be unique.`,
+					path: [i, "name"],
+				});
+			}
+			seen.add(node.name);
+		}
+	}
+});

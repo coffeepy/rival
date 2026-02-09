@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rival Workflow UI - Game-Inspired Design</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            color: #e2e8f0;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Game-style Header */
+        .header {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            border: 2px solid #475569;
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+            letter-spacing: 0.5px;
+        }
+
+        .header-info {
+            color: #94a3b8;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+
+        .status-badge {
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.875rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border: 2px solid;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+
+        .status-badge.success {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            border-color: #34d399;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+
+        .status-badge.failed {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            border-color: #f87171;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+            animation: pulse-glow 2s infinite;
+        }
+
+        .status-badge.running {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-color: #60a5fa;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 20px rgba(239, 68, 68, 0.3); }
+            50% { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 30px rgba(239, 68, 68, 0.6); }
+        }
+
+        .controls {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            border: 2px solid #475569;
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            display: flex;
+            gap: 1rem;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: 2px solid;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.75rem;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-color: #60a5fa;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #475569 0%, #334155 100%);
+            border-color: #64748b;
+            color: #e2e8f0;
+        }
+
+        /* Game-style Step Cards */
+        .steps-container {
+            display: grid;
+            gap: 1.5rem;
+        }
+
+        .step-card {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            border: 2px solid #475569;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .step-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: #475569;
+            transition: all 0.3s;
+        }
+
+        .step-card:hover {
+            transform: translateX(4px);
+            border-color: #64748b;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+        }
+
+        .step-card.success {
+            border-color: #10b981;
+        }
+
+        .step-card.success::before {
+            background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+        }
+
+        .step-card.failed {
+            border-color: #ef4444;
+            background: linear-gradient(135deg, #7f1d1d 0%, #1e293b 100%);
+            animation: error-pulse 3s infinite;
+        }
+
+        .step-card.failed::before {
+            background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
+        }
+
+        .step-card.running {
+            border-color: #3b82f6;
+        }
+
+        .step-card.running::before {
+            background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+            animation: pulse-bar 1.5s infinite;
+        }
+
+        .step-card.pending {
+            opacity: 0.6;
+            border-color: #64748b;
+        }
+
+        @keyframes error-pulse {
+            0%, 100% { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 rgba(239, 68, 68, 0); }
+            50% { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 30px rgba(239, 68, 68, 0.4); }
+        }
+
+        @keyframes pulse-bar {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .step-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #334155 0%, #475569 100%);
+            border: 2px solid #64748b;
+            font-weight: 700;
+            font-size: 1rem;
+            color: #e2e8f0;
+            margin-right: 1rem;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .step-card.success .step-number {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            border-color: #34d399;
+            color: white;
+        }
+
+        .step-card.failed .step-number {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            border-color: #f87171;
+            color: white;
+        }
+
+        .step-card.running .step-number {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-color: #60a5fa;
+            color: white;
+        }
+
+        .step-title-row {
+            display: flex;
+            align-items: center;
+            flex: 1;
+        }
+
+        .step-name {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #e2e8f0;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .step-status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border: 1px solid;
+        }
+
+        .step-status-badge.success {
+            background: rgba(16, 185, 129, 0.2);
+            border-color: #10b981;
+            color: #34d399;
+        }
+
+        .step-status-badge.failed {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: #ef4444;
+            color: #f87171;
+        }
+
+        .step-status-badge.running {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: #3b82f6;
+            color: #60a5fa;
+        }
+
+        .step-meta {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: #94a3b8;
+        }
+
+        .step-meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Status Bar (Health Bar Style) */
+        .status-bar-container {
+            margin: 1rem 0;
+        }
+
+        .status-bar-label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 0.5rem;
+        }
+
+        .status-bar {
+            height: 8px;
+            background: #1e293b;
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid #475569;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .status-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+        }
+
+        .status-bar-fill.success {
+            background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+        }
+
+        .status-bar-fill.failed {
+            background: linear-gradient(90deg, #ef4444 0%, #f87171 100%);
+        }
+
+        .status-bar-fill.running {
+            background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
+            animation: shimmer 1.5s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -100% 0; }
+            100% { background-position: 100% 0; }
+        }
+
+        /* Result/Error Display */
+        .step-content {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            border: 1px solid #475569;
+        }
+
+        .step-result {
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.75rem;
+            color: #34d399;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .step-error {
+            color: #f87171;
+            font-weight: 600;
+            font-size: 0.875rem;
+            line-height: 1.6;
+        }
+
+        .step-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .btn-action {
+            padding: 0.5rem 1rem;
+            border: 1px solid;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-action:hover {
+            transform: scale(1.05);
+        }
+
+        .btn-retry {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: #ef4444;
+            color: #f87171;
+        }
+
+        .btn-logs {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: #3b82f6;
+            color: #60a5fa;
+        }
+
+        .btn-details {
+            background: rgba(100, 116, 139, 0.2);
+            border-color: #64748b;
+            color: #94a3b8;
+        }
+
+        .flow-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            margin: 0 auto 0.5rem;
+            font-size: 1.25rem;
+        }
+
+        .flow-line {
+            width: 2px;
+            height: 24px;
+            background: linear-gradient(180deg, #475569 0%, transparent 100%);
+            margin: 0 auto;
+        }
+
+        .flow-line:last-child {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>⚔️ Workflow: treeProcessing</h1>
+                <div class="header-info">
+                    Run ID: treeProcessing-run-1234567890 • Started: 2:34 PM • Duration: <span id="duration">45s</span>
+                </div>
+            </div>
+            <div class="status-badge" id="statusBadge">
+                <span id="statusIcon">✅</span>
+                <span id="statusText">Success</span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-primary" onclick="showSuccess()">Show Success</button>
+            <button class="btn btn-secondary" onclick="showFailure()">Show Failure</button>
+            <button class="btn btn-secondary" onclick="showRunning()">Show Running</button>
+        </div>
+
+        <div class="steps-container" id="stepsContainer">
+            <!-- Steps will be generated by JS -->
+        </div>
+    </div>
+
+    <script>
+        const steps = [
+            { name: 'findTree', status: 'success', duration: '2s', result: { treeId: 'oak-123', location: 'forest' }, error: null },
+            { name: 'chopTree', status: 'success', duration: '5s', result: { chopped: true, pieces: 10 }, error: null },
+            { name: 'processTree', status: 'success', duration: '3s', result: { processed: true, product: 'lumber' }, error: null }
+        ];
+
+        function renderSteps() {
+            const container = document.getElementById('stepsContainer');
+            container.innerHTML = '';
+
+            steps.forEach((step, index) => {
+                const card = document.createElement('div');
+                card.className = `step-card ${step.status}`;
+
+                const resultContent = step.error
+                    ? `<div class="step-error">❌ ${step.error}</div>`
+                    : (step.result
+                        ? `<div class="step-result">${JSON.stringify(step.result, null, 2)}</div>`
+                        : '');
+
+                const statusBarWidth = step.status === 'success' ? 100 : step.status === 'failed' ? 0 : step.status === 'running' ? 50 : 0;
+
+                card.innerHTML = `
+                    ${index > 0 ? '<div class="flow-line"></div>' : ''}
+                    <div class="flow-indicator">${index < steps.length - 1 ? '↓' : '✓'}</div>
+                    <div class="step-header">
+                        <div class="step-title-row">
+                            <div class="step-number">${index + 1}</div>
+                            <div>
+                                <div class="step-name">${step.name}</div>
+                                <div class="step-meta">
+                                    <div class="step-meta-item">
+                                        <span>⏱️</span>
+                                        <span>${step.duration}</span>
+                                    </div>
+                                    <div class="step-meta-item">
+                                        <span>${getStatusIcon(step.status)}</span>
+                                        <span class="step-status-badge ${step.status}">${step.status}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="status-bar-container">
+                        <div class="status-bar-label">Progress</div>
+                        <div class="status-bar">
+                            <div class="status-bar-fill ${step.status}" style="width: ${statusBarWidth}%"></div>
+                        </div>
+                    </div>
+                    ${resultContent ? `<div class="step-content">${resultContent}</div>` : ''}
+                    <div class="step-actions">
+                        ${step.status === 'failed' ? '<button class="btn-action btn-retry">🔄 Retry</button>' : ''}
+                        <button class="btn-action btn-logs">📋 Logs</button>
+                        ${step.result ? '<button class="btn-action btn-details">🔍 Details</button>' : ''}
+                    </div>
+                `;
+
+                container.appendChild(card);
+            });
+        }
+
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'success': return '✅';
+                case 'failed': return '❌';
+                case 'running': return '⚡';
+                case 'pending': return '⏳';
+                default: return '⚪';
+            }
+        }
+
+        function updateStatus(status) {
+            const badge = document.getElementById('statusBadge');
+            const icon = document.getElementById('statusIcon');
+            const text = document.getElementById('statusText');
+
+            badge.className = `status-badge ${status}`;
+
+            switch (status) {
+                case 'success':
+                    icon.textContent = '✅';
+                    text.textContent = 'Success';
+                    break;
+                case 'failed':
+                    icon.textContent = '❌';
+                    text.textContent = 'Failed';
+                    break;
+                case 'running':
+                    icon.textContent = '⚡';
+                    text.textContent = 'Running';
+                    break;
+            }
+        }
+
+        function showSuccess() {
+            steps[0].status = 'success';
+            steps[1].status = 'success';
+            steps[2].status = 'success';
+            steps[2].result = { processed: true, product: 'lumber' };
+            steps[2].error = null;
+            updateStatus('success');
+            renderSteps();
+        }
+
+        function showFailure() {
+            steps[0].status = 'success';
+            steps[1].status = 'success';
+            steps[2].status = 'failed';
+            steps[2].result = null;
+            steps[2].error = 'Cannot read property \'id\' of undefined\nat processTree (workflow.ts:45:12)';
+            updateStatus('failed');
+            renderSteps();
+        }
+
+        function showRunning() {
+            steps[0].status = 'success';
+            steps[1].status = 'running';
+            steps[2].status = 'pending';
+            updateStatus('running');
+            renderSteps();
+        }
+
+        // Initialize
+        renderSteps();
+        updateStatus('success');
+    </script>
+</body>
+</html>
