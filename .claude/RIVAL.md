@@ -1,129 +1,112 @@
-# Rival - Workflow Engine
+# Rival - Internal Architecture Guide
 
 ## What is Rival?
 
-Rival is a **workflow engine library** built on top of [Rivet](https://rivet.gg) (actor framework).
+Rival is a **workflow engine library** built on [RivetKit](https://rivet.gg). It transforms TypeScript step functions into stateful RivetKit actors with automatic persistence, retry logic, and structured logging.
 
 **Core principles:**
 - **Developer-first:** Workflows defined in TypeScript code, not UI
-- **Single executable:** No external database required (Rivet handles persistence)
-- **Distribution-ready:** Works with Rivet's native clustering/routing
-
-## Two-Tier Vision
-
-1. **Rival Library** - A library on top of Rivet that provides workflow primitives
-2. **Rival Engine** - A standalone executable with UI that uses the Rival library
+- **Single executable:** No external database required (RivetKit handles persistence)
+- **Distribution-ready:** Works with RivetKit's native clustering/routing
 
 ## Architecture
 
-### Built on Rivet's Actor Model
-
-Rival uses Rivet's stateful actors with disk persistence. This enables deployment as a single executable without external databases.
-
-### Coordinator/Data Pattern
-
-Rival follows Rivet's native **Coordinator/Data pattern**:
-
-```
-ACTOR TYPES (Code)                    ACTOR INSTANCES (State)
-─────────────────────                 ──────────────────────────
-Defined at registration               Created at runtime
-Deployed to ALL servers               Live on ONE server (Rivet routes)
-Contain the step function             Contain execution state
-Same code everywhere                  Unique per workflow run
-```
-
 ### Function-to-Actor Bridge
 
-**Key insight:** Step functions are embedded in actor definitions at **registration time**, not looked up at runtime.
+Step functions are embedded in actor definitions at **compile time**, not looked up at runtime. `compileWorkflow()` transforms each step function into a RivetKit actor definition with its own state management.
 
-```typescript
-// User writes:
-export const steps = [findTree, chopTree, processTree]
-
-// Rival transforms each into an actor TYPE:
-const findTreeStep = actor({
-    state: { status: 'pending', result: null },
-    actions: {
-        execute: (c, ctx) => findTree(ctx)  // Function baked in
-    }
-});
-
-// All actors registered together (deployed to all servers):
-const registry = setup({
-    use: { findTreeStep, chopTreeStep, workflowCoordinator }
-});
 ```
+createWorkflow("name")     compileWorkflow()         rival()
+  .step(fn1)          -->   { actors, plan,     -->   setup() + start()
+  .step(fn2)                  coordinator }           --> RivalEngine
+  .build()
+```
+
+### Actor Types
+
+| Actor | Responsibility |
+|-------|----------------|
+| **StepActor** | Execute a step function, manage retries, track state/result/logs |
+| **WorkflowCoordinator** | Orchestrate steps sequentially per the plan, handle errors |
+
+Each workflow produces N step actors + 1 coordinator. Actor names are namespaced: `{workflowName}_{stepName}`.
 
 ### Plan (AST)
 
-Workflows generate a **plan** - an abstract syntax tree that references actor type names (strings), not functions:
+Workflows generate a **plan** - a serializable array of `PlanNode` objects referencing actor names (strings), not functions:
 
 ```typescript
 type PlanNode =
-    | { type: 'step', name: string, actorType: string, config?: StepConfig }
-    | { type: 'branch', name: string, conditionActorType: string, then: PlanNode[], else: PlanNode[] }
-    | { type: 'loop', name: string, conditionActorType: string, body: PlanNode[] }
-    | { type: 'parallel', name: string, children: PlanNode[] }
+  | StepPlanNode      // { type: 'step', name, actorRef, config? }
+  | BranchPlanNode    // { type: 'branch', ... } (future)
+  | LoopPlanNode      // { type: 'loop', ... } (future)
+  | ParallelPlanNode  // { type: 'parallel', ... } (future)
 ```
 
-The plan is serializable (no functions) so it can be sent to the UI.
+Currently only `StepPlanNode` (sequential execution) is implemented.
 
-## Workflow Structure
+### StepContext
 
-**Everything is a Supervisor or a Step** (fractal pattern):
+Every step function receives a `StepContext` with:
+- `input` - The workflow input data
+- `state` - Mutable per-step state (persisted)
+- `steps` - Results from all previously executed steps
+- `lastStep` - Shorthand for the immediately preceding step
+- `log` - Structured logger (debug/info/warn/error)
 
-| Actor Type | Responsibility |
-|------------|----------------|
-| `WorkflowSupervisor` | Orchestrate steps sequentially, manage sub-supervisors |
-| `StepActor` | Execute a function, manage own state (status, result, retries, logs) |
-| `BranchSupervisor` | Evaluate condition, execute then/else path |
-| `LoopSupervisor` | Execute body repeatedly until condition is false |
-| `ParallelSupervisor` | Spawn all children concurrently, await all results |
+### Error Handling
 
-Supervisors can contain other supervisors (arbitrary nesting).
+- **StepError** with `behavior: "continue"` lets the workflow proceed past failures
+- **StepError** with `behavior: "stop"` (default) halts the workflow
+- **Retry**: Steps can be configured with `maxAttempts`, `backoff` (linear/exponential), `timeout`
 
-## User-Facing API (Planned)
+## Source Layout
 
-```typescript
-// File-based workflow
-export const steps = [
-    findTree,
-    { fn: chopTree, timeout: 60000, maxAttempts: 3 },
-    processTree
-]
-
-// Or builder API
-const workflow = createWorkflow('treeProcessing')
-    .input(z.object({ treeType: z.string() }))
-    .step(findTree)
-    .step(chopTree)
-    .register()
+```
+src/rival/
+  index.ts                    # Public API exports
+  engine.ts                   # rival() function, RivalEngine, ActorRegistry
+  builder/
+    workflow-builder.ts       # createWorkflow() fluent builder
+    compiler.ts               # compileWorkflow(), defineWorkflow()
+  core/
+    step-actor.ts             # createStepActor() factory
+    workflow-coordinator.ts   # createWorkflowCoordinator() factory
+    context-builder.ts        # buildStepContext(), createEmptyStepState()
+  logging/
+    logger.ts                 # createStepLogger()
+  steps/
+    http-step.ts              # httpStep() factory
+    delay-step.ts             # delayStep() factory
+  types/
+    context.ts                # StepContext, StepLogger, LogEntry
+    step.ts                   # StepFunction, StepConfig, StepDefinition
+    plan.ts                   # PlanNode types + Zod schemas
+    workflow.ts               # WorkflowDefinition, CompiledWorkflow
+    errors.ts                 # StepError class
 ```
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
-| `redesign.md` | Full design specification |
-| `poc/workflow-poc-v2.ts` | Working POC using Coordinator/Data pattern |
-| `poc/multi-actor-demo.ts` | Demo showing Rivet actor distribution |
-| `rivet.txt` | Rivet documentation reference |
+| `rivet.txt` | RivetKit documentation reference |
 
-## Current Status
+## Public API Surface
 
-**Done:**
-- Design specification (redesign.md)
-- POC v2 proving Coordinator/Data pattern works
-- Actor types vs instances model validated
+```
+Functions:  rival, createWorkflow, compileWorkflow, defineWorkflow,
+            createStepActor, createWorkflowCoordinator,
+            buildStepContext, createEmptyStepState, createStepLogger,
+            httpStep, delayStep
 
-**Phase 1 (Next):**
-- Build Rival library with developer-friendly API
-- Registration/transformation layer (user functions → actor types)
-- Basic UI for monitoring workflows
-- Sequential execution only (no branch/loop/parallel yet)
+Classes:    RivalEngine, WorkflowBuilder, StepError
 
-**Future Phases:**
-- BranchSupervisor, LoopSupervisor, ParallelSupervisor
-- Advanced error handling
-- Hot reloading
+Schemas:    planSchema, stepPlanNodeSchema
+```
+
+## Future Work
+
+- Branch/loop/parallel plan nodes (supervisor actors)
+- Hot reloading of workflow definitions
+- Workflow versioning

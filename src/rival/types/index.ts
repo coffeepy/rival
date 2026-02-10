@@ -40,8 +40,6 @@ export { planSchema, stepPlanNodeSchema } from "./plan";
 export type {
 	WorkflowDefinition,
 	CompiledWorkflow,
-	WorkflowMetadata,
-	WorkflowRunInfo,
 } from "./workflow";
 
 // Error types

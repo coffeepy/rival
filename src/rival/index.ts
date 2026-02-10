@@ -76,8 +76,6 @@ export type {
 	// Workflow types
 	WorkflowDefinition,
 	CompiledWorkflow,
-	WorkflowMetadata,
-	WorkflowRunInfo,
 	// Error types
 	StepErrorOptions,
 } from "./types";
@@ -95,14 +93,9 @@ export type { StepInput } from "./builder/workflow-builder";
 // Compiler
 export { compileWorkflow, defineWorkflow } from "./builder/compiler";
 
-// Registry
-export {
-	WorkflowRegistry,
-	workflowRegistry,
-	createRegistryActor,
-	registerWorkflow,
-} from "./core/registry-actor";
-export type { ActiveRun, RegistryActorState, LaunchResult } from "./core/registry-actor";
+// Engine (top-level convenience API)
+export { rival, RivalEngine } from "./engine";
+export type { CoordinatorHandle, CoordinatorInstance } from "./engine";
 
 // Predefined Steps
 export { httpStep, delayStep } from "./steps";

@@ -1,5 +1,5 @@
 /**
- * Phase 2 Test
+ * Builder & Compiler Test
  *
  * Tests the builder and compiler functionality:
  * - createWorkflow fluent API
@@ -7,7 +7,7 @@
  * - Generated actors work correctly
  * - Full workflow execution with compiled workflow
  *
- * Run with: bun test/phase2.test.ts
+ * Run with: bun test/builder-compiler.test.ts
  */
 
 import { setup } from "rivetkit";
@@ -265,7 +265,7 @@ async function testDefineWorkflow() {
 
 async function main() {
 	console.log(`\n${"=".repeat(60)}`);
-	console.log("RIVAL PHASE 2 TEST - Builder & Compiler");
+	console.log("RIVAL TEST - Builder & Compiler");
 	console.log(`${"=".repeat(60)}\n`);
 
 	const results: Record<string, boolean> = {};
@@ -300,7 +300,7 @@ async function main() {
 
 	// Summary
 	console.log("=".repeat(60));
-	console.log("PHASE 2 TESTS COMPLETE");
+	console.log("BUILDER & COMPILER TESTS COMPLETE");
 	console.log("=".repeat(60));
 	console.log("\nResults:");
 
