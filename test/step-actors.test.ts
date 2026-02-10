@@ -1,5 +1,5 @@
 /**
- * Phase 1 Test
+ * Step Actors Test
  *
  * Tests the core Rival library functionality:
  * - createStepActor with function baked in
@@ -8,7 +8,7 @@
  * - Retry behavior
  * - StepError handling
  *
- * Run with: bun test/phase1.test.ts
+ * Run with: bun test/step-actors.test.ts
  */
 
 import { setup } from "rivetkit";
@@ -185,7 +185,7 @@ const registry = setup({
 
 async function main() {
 	console.log(`\n${"=".repeat(60)}`);
-	console.log("RIVAL PHASE 1 TEST");
+	console.log("RIVAL TEST - Step Actors");
 	console.log(`${"=".repeat(60)}\n`);
 
 	const { client } = registry.start({
@@ -304,7 +304,7 @@ async function main() {
 
 	// Summary
 	console.log("=".repeat(60));
-	console.log("PHASE 1 TESTS COMPLETE");
+	console.log("STEP ACTORS TESTS COMPLETE");
 	console.log("=".repeat(60));
 	console.log("\nResults:");
 	console.log(`  1. Happy Path:      ${result1.status}`);

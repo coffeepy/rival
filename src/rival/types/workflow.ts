@@ -43,26 +43,3 @@ export interface CompiledWorkflow {
 	/** Optional description */
 	description?: string;
 }
-
-/**
- * Workflow metadata returned by registry.list().
- * Lightweight info for UI display.
- */
-export interface WorkflowMetadata {
-	name: string;
-	description?: string;
-	stepCount: number;
-	/** JSON Schema representation of input (for form generation) */
-	inputJsonSchema?: object;
-}
-
-/**
- * Information about an active workflow run.
- */
-export interface WorkflowRunInfo {
-	runId: string;
-	workflowName: string;
-	status: "pending" | "running" | "completed" | "failed" | "cancelled";
-	startedAt: number;
-	completedAt?: number;
-}

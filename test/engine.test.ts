@@ -1,5 +1,5 @@
 /**
- * Phase 5 Test
+ * Engine Test
  *
  * Tests the rival() convenience API and RivalEngine:
  * - Single workflow (WorkflowDefinition input)
@@ -9,9 +9,9 @@
  * - Auto-generated runId works
  * - engine.list() returns names
  * - engine.get() returns coordinator handle
- * - engine.cancel() cancels a running workflow
+ * - Duplicate workflow/actor name rejection
  *
- * Run with: bun test/phase5.test.ts
+ * Run with: bun test/engine.test.ts
  */
 
 import { type StepContext, compileWorkflow, createWorkflow, rival } from "../src/rival";
@@ -168,19 +168,39 @@ async function testEngineList() {
 	assert(names.includes("gamma"), "includes gamma");
 }
 
-async function testRegistryEscapeHatch() {
-	console.log("\n--- TEST: registry escape hatch ---\n");
+async function testDuplicateWorkflowNameRejected() {
+	console.log("\n--- TEST: Duplicate workflow name rejected ---\n");
 
-	const workflow = createWorkflow("escapeHatch").step(addOne).build();
+	const w1 = createWorkflow("sameName").step(addOne).build();
+	const w2 = createWorkflow("sameName").step(greet).build();
 
-	const engine = rival(workflow);
+	try {
+		rival(w1, w2);
+		assert(false, "should have thrown for duplicate workflow name");
+	} catch (err) {
+		const msg = (err as Error).message;
+		assert(msg.includes("already registered"), "error mentions already registered");
+		assert(msg.includes("sameName"), "error mentions the duplicate name");
+	}
+}
 
-	assert(engine.registry !== undefined, "registry is accessible");
-	assert(engine.registry.has("escapeHatch"), "registry has the workflow");
+async function testDuplicateActorNameRejected() {
+	console.log("\n--- TEST: Duplicate actor name rejected ---\n");
 
-	const meta = engine.registry.list();
-	assert(meta.length === 1, "registry.list() returns metadata");
-	assert(meta[0].name === "escapeHatch", "metadata has correct name");
+	const w1 = compileWorkflow(createWorkflow("flow1").step(addOne).build());
+	const w2 = compileWorkflow(createWorkflow("flow2").step(addOne).build());
+
+	// Manually inject a colliding actor name into w2
+	const collidingActorName = Object.keys(w1.actors)[0];
+	w2.actors[collidingActorName] = Object.values(w2.actors)[0];
+
+	try {
+		rival(w1, w2);
+		assert(false, "should have thrown for duplicate actor name");
+	} catch (err) {
+		const msg = (err as Error).message;
+		assert(msg.includes("Duplicate actor name"), "error mentions duplicate actor name");
+	}
 }
 
 async function testGetCoordinatorHandle() {
@@ -263,7 +283,7 @@ async function testGetRunAndInspect() {
 
 async function main() {
 	console.log("============================================================");
-	console.log("Phase 5: rival() Engine API Tests");
+	console.log("RIVAL TEST - Engine API");
 	console.log("============================================================");
 
 	await testSingleWorkflowDefinition();
@@ -273,7 +293,8 @@ async function main() {
 	await testAutoRunId();
 	await testExplicitRunId();
 	await testEngineList();
-	await testRegistryEscapeHatch();
+	await testDuplicateWorkflowNameRejected();
+	await testDuplicateActorNameRejected();
 	await testGetCoordinatorHandle();
 	await testGetUnknownWorkflowError();
 	await testGetRunAndInspect();

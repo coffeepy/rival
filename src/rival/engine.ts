@@ -13,7 +13,6 @@
 
 import { setup } from "rivetkit";
 import { compileWorkflow } from "./builder/compiler";
-import { WorkflowRegistry } from "./core/registry-actor";
 import type {
 	WorkflowCoordinatorState,
 	WorkflowExecutionResult,
@@ -45,19 +44,40 @@ function isCompiledWorkflow(w: WorkflowDefinition | CompiledWorkflow): w is Comp
 }
 
 /**
+ * Private registry that collects actors from compiled workflows,
+ * checking for duplicate workflow names and actor names.
+ */
+class ActorRegistry {
+	private workflowNames = new Set<string>();
+	private actors: Record<string, unknown> = {};
+
+	register(workflow: CompiledWorkflow): void {
+		if (this.workflowNames.has(workflow.name)) {
+			throw new Error(`Workflow "${workflow.name}" is already registered`);
+		}
+		this.workflowNames.add(workflow.name);
+
+		for (const [actorName, actorDef] of Object.entries(workflow.actors)) {
+			if (this.actors[actorName]) {
+				throw new Error(`Duplicate actor name: ${actorName}`);
+			}
+			this.actors[actorName] = actorDef;
+		}
+	}
+
+	getAllActors(): Record<string, unknown> {
+		return { ...this.actors };
+	}
+}
+
+/**
  * A running workflow engine with registered workflows.
  */
 export class RivalEngine {
-	readonly registry: WorkflowRegistry;
 	private client: Record<string, unknown>;
 	private compiledWorkflows: Map<string, CompiledWorkflow>;
 
-	constructor(
-		registry: WorkflowRegistry,
-		client: Record<string, unknown>,
-		compiledWorkflows: Map<string, CompiledWorkflow>,
-	) {
-		this.registry = registry;
+	constructor(client: Record<string, unknown>, compiledWorkflows: Map<string, CompiledWorkflow>) {
 		this.client = client;
 		this.compiledWorkflows = compiledWorkflows;
 	}
@@ -134,7 +154,7 @@ export class RivalEngine {
  * ```
  */
 export function rival(...workflows: (WorkflowDefinition | CompiledWorkflow)[]): RivalEngine {
-	const registry = new WorkflowRegistry();
+	const registry = new ActorRegistry();
 	const compiledWorkflows = new Map<string, CompiledWorkflow>();
 
 	for (const w of workflows) {
@@ -154,5 +174,5 @@ export function rival(...workflows: (WorkflowDefinition | CompiledWorkflow)[]): 
 		noWelcome: true,
 	});
 
-	return new RivalEngine(registry, client as Record<string, unknown>, compiledWorkflows);
+	return new RivalEngine(client as Record<string, unknown>, compiledWorkflows);
 }

@@ -1,11 +1,11 @@
 /**
- * Phase 4 Test
+ * Predefined Steps Test
  *
  * Tests the predefined step factories:
  * - httpStep
  * - delayStep
  *
- * Run with: bun test/phase4.test.ts
+ * Run with: bun test/predefined-steps.test.ts
  */
 
 import { setup } from "rivetkit";
@@ -319,7 +319,7 @@ async function testWorkflowIntegration() {
 
 async function main() {
 	console.log(`\n${"=".repeat(60)}`);
-	console.log("RIVAL PHASE 4 TEST - Predefined Steps");
+	console.log("RIVAL TEST - Predefined Steps");
 	console.log(`${"=".repeat(60)}\n`);
 
 	const results: Record<string, boolean> = {};
@@ -347,7 +347,7 @@ async function main() {
 
 	// Summary
 	console.log("=".repeat(60));
-	console.log("PHASE 4 TESTS COMPLETE");
+	console.log("PREDEFINED STEPS TESTS COMPLETE");
 	console.log("=".repeat(60));
 	console.log("\nResults:");
 

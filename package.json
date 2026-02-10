@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"test": "bun test",
-		"test:phase1": "bun test/phase1.test.ts",
+		"test:step-actors": "bun test/step-actors.test.ts",
 		"check": "bun run check:types && bun run check:lint",
 		"check:types": "tsc --noEmit",
 		"check:lint": "biome check .",
