@@ -104,6 +104,10 @@ export {
 } from "./core/registry-actor";
 export type { ActiveRun, RegistryActorState, LaunchResult } from "./core/registry-actor";
 
+// Engine (top-level convenience API)
+export { rival, RivalEngine } from "./engine";
+export type { CoordinatorHandle, CoordinatorInstance } from "./engine";
+
 // Predefined Steps
 export { httpStep, delayStep } from "./steps";
 export type {
