@@ -23,28 +23,6 @@ interface OrderInput {
 	amount: number;
 }
 
-async function waitForTerminal(instance: {
-	getState: () => Promise<{
-		status: string;
-		stepResults: Record<string, unknown>;
-		error: string | null;
-	}>;
-}): Promise<{ status: string; results?: Record<string, unknown>; error?: string }> {
-	for (;;) {
-		const state = await instance.getState();
-		if (state.status === "completed") {
-			return { status: "completed", results: state.stepResults };
-		}
-		if (state.status === "failed") {
-			return { status: "failed", error: state.error ?? undefined, results: state.stepResults };
-		}
-		if (state.status === "cancelled") {
-			return { status: "cancelled", results: state.stepResults };
-		}
-		await new Promise((resolve) => setTimeout(resolve, 25));
-	}
-}
-
 function validateInput({ input, log }: StepContext) {
 	const orderInput = input as OrderInput;
 	log.info(`Validating order ${orderInput.orderId}`);
@@ -226,21 +204,14 @@ async function testExecution() {
 				id: string,
 				input: unknown,
 			) => Promise<{ status: string; results?: Record<string, unknown> }>;
-			getState: () => Promise<{
-				status: string;
-				stepResults: Record<string, unknown>;
-				error: string | null;
-			}>;
 		};
 	};
 
-	const runId = `test-order-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-	const instance = coordinator.getOrCreate(runId);
-	await instance.run(runId, {
+	const instance = coordinator.getOrCreate("test-order-1");
+	const result = await instance.run("test-order-1", {
 		orderId: "ORD-123",
 		amount: 99.99,
 	});
-	const result = await waitForTerminal(instance);
 
 	console.log("Execution result:");
 	console.log(JSON.stringify(result, null, 2));

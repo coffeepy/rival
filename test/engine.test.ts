@@ -33,17 +33,6 @@ function assert(condition: boolean, message: string) {
 	}
 }
 
-async function runToTerminal(
-	engine: ReturnType<typeof rival>,
-	workflowName: string,
-	input?: unknown,
-	runId?: string,
-) {
-	const start = await engine.run(workflowName, input, runId);
-	assert(!!start.runId, "run() returns runId");
-	return engine.wait(workflowName, start.runId);
-}
-
 // Simple step functions for testing
 function addOne({ input }: StepContext) {
 	const val = (input as { value?: number })?.value ?? 0;
@@ -74,7 +63,7 @@ async function testSingleWorkflowDefinition() {
 	assert(engine.list().length === 1, "engine has 1 workflow");
 	assert(engine.list()[0] === "math", "workflow name is 'math'");
 
-	const result = await runToTerminal(engine, "math", { value: 4 });
+	const result = await engine.run("math", { value: 4 });
 
 	assert(result.status === "completed", "workflow completed");
 	const doubleResult = result.results?.double?.result as { value: number };
@@ -92,7 +81,7 @@ async function testSingleCompiledWorkflow() {
 	assert(engine.list().length === 1, "engine has 1 workflow");
 	assert(engine.list()[0] === "greetFlow", "workflow name is 'greetFlow'");
 
-	const result = await runToTerminal(engine, "greetFlow", { name: "Rival" });
+	const result = await engine.run("greetFlow", { name: "Rival" });
 
 	assert(result.status === "completed", "workflow completed");
 	const greetResult = result.results?.greet?.result as { message: string };
@@ -112,12 +101,12 @@ async function testMultipleWorkflows() {
 	assert(engine.list().includes("math"), "has 'math' workflow");
 	assert(engine.list().includes("greet"), "has 'greet' workflow");
 
-	const mathResult = await runToTerminal(engine, "math", { value: 9 });
+	const mathResult = await engine.run("math", { value: 9 });
 	assert(mathResult.status === "completed", "math workflow completed");
 	const doubleResult = mathResult.results?.double?.result as { value: number };
 	assert(doubleResult.value === 20, "addOne(9)=10, double(10)=20");
 
-	const greetResult = await runToTerminal(engine, "greet", { name: "World" });
+	const greetResult = await engine.run("greet", { name: "World" });
 	assert(greetResult.status === "completed", "greet workflow completed");
 	const msg = greetResult.results?.greet?.result as { message: string };
 	assert(msg.message === "Hello, World!", "greeting is correct");
@@ -148,7 +137,7 @@ async function testAutoRunId() {
 	const engine = rival(workflow);
 
 	// Run without specifying runId — should auto-generate and succeed
-	const result = await runToTerminal(engine, "autoId", { value: 0 });
+	const result = await engine.run("autoId", { value: 0 });
 	assert(result.status === "completed", "workflow completed with auto-runId");
 }
 
@@ -159,8 +148,7 @@ async function testExplicitRunId() {
 
 	const engine = rival(workflow);
 
-	const explicitRunId = `my-custom-run-id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-	const result = await runToTerminal(engine, "explicitId", { value: 0 }, explicitRunId);
+	const result = await engine.run("explicitId", { value: 0 }, "my-custom-run-id");
 	assert(result.status === "completed", "workflow completed with explicit runId");
 }
 
@@ -226,16 +214,13 @@ async function testGetCoordinatorHandle() {
 	assert(typeof coord.getOrCreate === "function", "handle has getOrCreate()");
 
 	// Get a run instance
-	const runId = `run-get-1-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-	const instance = coord.getOrCreate(runId);
+	const instance = coord.getOrCreate("run-get-1");
 	assert(typeof instance.run === "function", "instance has run()");
 	assert(typeof instance.cancel === "function", "instance has cancel()");
 	assert(typeof instance.getState === "function", "instance has getState()");
 
 	// Use the instance directly to run a workflow
-	const start = await instance.run(runId, { value: 7 });
-	assert(start.runId === runId, "instance.run returns runId");
-	const result = await instance.wait();
+	const result = await instance.run("run-get-1", { value: 7 });
 	assert(result.status === "completed", "workflow completed via handle");
 	const addResult = result.results?.addOne?.result as { value: number };
 	assert(addResult.value === 8, "addOne(7)=8 via handle");
@@ -272,8 +257,7 @@ async function testGetRunAndInspect() {
 
 	// Use get() to run directly
 	const coord = engine.get("lifecycle");
-	const runId = `lc-run-1-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-	const instance = coord.getOrCreate(runId);
+	const instance = coord.getOrCreate("lc-run-1");
 
 	// Verify full API surface
 	assert(typeof instance.run === "function", "instance has run()");
@@ -281,9 +265,7 @@ async function testGetRunAndInspect() {
 	assert(typeof instance.getState === "function", "instance has getState()");
 
 	// Run via handle
-	const start = await instance.run(runId, { value: 41 });
-	assert(start.runId === runId, "instance.run returns runId");
-	const result = await instance.wait();
+	const result = await instance.run("lc-run-1", { value: 41 });
 	assert(result.status === "completed", "workflow completed via get()");
 
 	const addResult = result.results?.addOne?.result as { value: number };

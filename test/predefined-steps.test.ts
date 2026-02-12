@@ -17,28 +17,6 @@ import {
 	httpStep,
 } from "../src/rival";
 
-async function waitForTerminal(instance: {
-	getState: () => Promise<{
-		status: string;
-		stepResults: Record<string, unknown>;
-		error: string | null;
-	}>;
-}): Promise<{ status: string; results?: Record<string, unknown>; error?: string }> {
-	for (;;) {
-		const state = await instance.getState();
-		if (state.status === "completed") {
-			return { status: "completed", results: state.stepResults };
-		}
-		if (state.status === "failed") {
-			return { status: "failed", error: state.error ?? undefined, results: state.stepResults };
-		}
-		if (state.status === "cancelled") {
-			return { status: "cancelled", results: state.stepResults };
-		}
-		await new Promise((resolve) => setTimeout(resolve, 25));
-	}
-}
-
 // =============================================================================
 // TEST: DELAY STEP
 // =============================================================================
@@ -316,19 +294,11 @@ async function testWorkflowIntegration() {
 					id: string,
 					input: unknown,
 				) => Promise<{ status: string; results?: Record<string, unknown> }>;
-				getState: () => Promise<{
-					status: string;
-					stepResults: Record<string, unknown>;
-					error: string | null;
-				}>;
 			};
 		};
 
 		console.log("\nRunning workflow...");
-		const runId = `test-api-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-		const instance = coordinator.getOrCreate(runId);
-		await instance.run(runId, {});
-		const result = await waitForTerminal(instance);
+		const result = await coordinator.getOrCreate("test-api-1").run("test-api-1", {});
 
 		console.log(`\nResult: ${result.status}`);
 

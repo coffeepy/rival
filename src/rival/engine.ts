@@ -7,12 +7,11 @@
  * @example
  * ```typescript
  * const engine = rival(workflow1, workflow2);
- * const { runId } = await engine.run("workflow1", { input });
- * const result = await engine.wait("workflow1", runId);
+ * const result = await engine.run("workflow1", { input });
  * ```
  */
 
-import { createFileSystemDriver, setup } from "rivetkit";
+import { setup } from "rivetkit";
 import { compileWorkflow } from "./builder/compiler";
 import type {
 	WorkflowCoordinatorState,
@@ -20,25 +19,11 @@ import type {
 } from "./core/workflow-coordinator";
 import type { CompiledWorkflow, WorkflowDefinition } from "./types";
 
-export interface WaitOptions {
-	timeoutMs?: number;
-	pollIntervalMs?: number;
-}
-
-export interface WorkflowRunStartResult {
-	runId: string;
-	status: "started" | "running";
-}
-
 /**
  * A coordinator instance for a specific workflow run.
- *
- * `run()` starts asynchronously and returns immediately.
- * Use `wait()` to resolve terminal workflow results.
  */
 export interface CoordinatorInstance {
-	run: (runId: string, input: unknown) => Promise<WorkflowRunStartResult>;
-	wait: (options?: WaitOptions) => Promise<WorkflowExecutionResult>;
+	run: (runId: string, input: unknown) => Promise<WorkflowExecutionResult>;
 	cancel: () => Promise<void>;
 	getState: () => Promise<WorkflowCoordinatorState & { duration: number | null }>;
 }
@@ -49,14 +34,6 @@ export interface CoordinatorInstance {
  */
 export interface CoordinatorHandle {
 	getOrCreate: (runId: string) => CoordinatorInstance;
-}
-
-interface RawCoordinatorHandle {
-	getOrCreate: (runId: string) => {
-		run: (runId: string, input: unknown) => Promise<WorkflowExecutionResult>;
-		cancel: () => Promise<void>;
-		getState: () => Promise<WorkflowCoordinatorState & { duration: number | null }>;
-	};
 }
 
 /**
@@ -97,9 +74,6 @@ class ActorRegistry {
  * A running workflow engine with registered workflows.
  */
 export class RivalEngine {
-	private static readonly WAIT_TIMEOUT_MS = 300_000;
-	private static readonly WAIT_POLL_INTERVAL_MS = 250;
-
 	private client: Record<string, unknown>;
 	private compiledWorkflows: Map<string, CompiledWorkflow>;
 
@@ -114,82 +88,25 @@ export class RivalEngine {
 	 * @param workflowName - Name of the registered workflow
 	 * @param input - Input data for the workflow
 	 * @param runId - Optional run ID (auto-generated if not provided)
-	 * @returns start metadata ({ runId, status })
+	 * @returns The workflow execution result
 	 */
 	async run(
 		workflowName: string,
 		input?: unknown,
 		runId?: string,
-	): Promise<WorkflowRunStartResult> {
+	): Promise<WorkflowExecutionResult> {
 		const id = runId ?? `${workflowName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 		const coord = this.get(workflowName);
 		const instance = coord.getOrCreate(id);
-		await instance.run(id, input === undefined ? {} : input);
-		return { runId: id, status: "started" };
-	}
-
-	/**
-	 * Wait for a workflow run to reach terminal status.
-	 */
-	async wait(
-		workflowName: string,
-		runId: string,
-		options?: WaitOptions,
-	): Promise<WorkflowExecutionResult> {
-		const coord = this.get(workflowName);
-		const instance = coord.getOrCreate(runId);
-		return this.waitForTerminal(instance.getState, workflowName, runId, options);
-	}
-
-	private async waitForTerminal(
-		getState: CoordinatorInstance["getState"],
-		workflowName: string,
-		runId: string,
-		options?: WaitOptions,
-	): Promise<WorkflowExecutionResult> {
-		const timeoutMs = options?.timeoutMs ?? RivalEngine.WAIT_TIMEOUT_MS;
-		const pollIntervalMs = options?.pollIntervalMs ?? RivalEngine.WAIT_POLL_INTERVAL_MS;
-		const startedAt = Date.now();
-
-		for (;;) {
-			const elapsed = Date.now() - startedAt;
-			if (elapsed > timeoutMs) {
-				throw new Error(
-					`Timed out waiting for workflow "${workflowName}" run "${runId}" after ${timeoutMs}ms`,
-				);
-			}
-
-			const state = await getState();
-			if (state.status === "pending" || state.status === "running") {
-				await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-				continue;
-			}
-
-			if (state.status === "completed") {
-				return { status: "completed", results: state.stepResults };
-			}
-			if (state.status === "failed") {
-				return {
-					status: "failed",
-					error: state.error ?? `Workflow "${workflowName}" run "${runId}" failed`,
-					failedStep: state.failedStep ?? undefined,
-					results: state.stepResults,
-				};
-			}
-			if (state.status === "cancelled") {
-				return { status: "cancelled", results: state.stepResults };
-			}
-
-			await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-		}
+		return instance.run(id, input === undefined ? {} : input);
 	}
 
 	/**
 	 * Get the coordinator for a workflow.
 	 *
 	 * Escape hatch for advanced usage — call `getOrCreate(runId)` on the
-	 * returned handle to get a run instance with `run`, `wait`, `cancel`, `getState`.
+	 * returned handle to get a run instance with `run`, `cancel`, `getState`.
 	 *
 	 * @param workflowName - Name of the registered workflow
 	 * @returns The coordinator handle
@@ -204,31 +121,14 @@ export class RivalEngine {
 		}
 
 		const coordinatorType = this.client[compiled.coordinatorActorRef] as
-			| RawCoordinatorHandle
+			| CoordinatorHandle
 			| undefined;
 
 		if (!coordinatorType) {
 			throw new Error(`Coordinator "${compiled.coordinatorActorRef}" not found in runtime`);
 		}
 
-		return {
-			getOrCreate: (runId: string): CoordinatorInstance => {
-				const rawInstance = coordinatorType.getOrCreate(runId);
-				return {
-					run: async (rawRunId: string, input: unknown): Promise<WorkflowRunStartResult> => {
-						const runResult = await rawInstance.run(rawRunId, input);
-						if (runResult.status === "failed") {
-							throw new Error(runResult.error ?? `Workflow "${workflowName}" failed to start`);
-						}
-						return { runId: rawRunId, status: "running" };
-					},
-					wait: (options?: WaitOptions) =>
-						this.waitForTerminal(rawInstance.getState, workflowName, runId, options),
-					cancel: rawInstance.cancel,
-					getState: rawInstance.getState,
-				};
-			},
-		};
+		return coordinatorType;
 	}
 
 	/**
@@ -249,8 +149,7 @@ export class RivalEngine {
  * @example
  * ```typescript
  * const engine = rival(workflow1, workflow2);
- * const { runId } = await engine.run("workflow1", { location: "forest" });
- * const result = await engine.wait("workflow1", runId);
+ * const result = await engine.run("workflow1", { location: "forest" });
  * console.log(result.status); // "completed"
  * ```
  */
@@ -270,9 +169,7 @@ export function rival(...workflows: (WorkflowDefinition | CompiledWorkflow)[]): 
 		} as Parameters<typeof setup>[0]["use"],
 	});
 
-	const isolatedStoragePath = `/tmp/rival-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 	const { client } = rivet.start({
-		driver: createFileSystemDriver({ path: isolatedStoragePath }),
 		disableDefaultServer: true,
 		noWelcome: true,
 	});

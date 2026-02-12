@@ -99,12 +99,7 @@ export { compileWorkflow, defineWorkflow } from "./builder/compiler";
 
 // Engine (top-level convenience API)
 export { rival, RivalEngine } from "./engine";
-export type {
-	CoordinatorHandle,
-	CoordinatorInstance,
-	WaitOptions,
-	WorkflowRunStartResult,
-} from "./engine";
+export type { CoordinatorHandle, CoordinatorInstance } from "./engine";
 
 // Predefined Steps
 export { httpStep, delayStep } from "./steps";

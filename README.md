@@ -26,8 +26,7 @@ const workflow = createWorkflow("onboarding")
   .build();
 
 const engine = rival(workflow);
-const { runId } = await engine.run("onboarding", { userId: "u-123" });
-const result = await engine.wait("onboarding", runId);
+const result = await engine.run("onboarding", { userId: "u-123" });
 console.log(result.status); // "completed"
 ```
 
@@ -36,8 +35,8 @@ console.log(result.status); // "completed"
 Rival transforms your step functions into RivetKit actors at registration time. Each step becomes a stateful actor with its own execution state, retry logic, and logging. A coordinator actor orchestrates them sequentially according to the workflow plan.
 
 ```
-Your functions  -->  rival()  -->  RivetKit actors  -->  engine.run() + engine.wait()
-                     compiles       with persistence      start + await terminal state
+Your functions  -->  rival()  -->  RivetKit actors  -->  engine.run()
+                     compiles       with persistence      executes
 ```
 
 ## API
@@ -49,8 +48,7 @@ Top-level entry point. Accepts workflow definitions or pre-compiled workflows. R
 ```typescript
 const engine = rival(workflow1, workflow2);
 
-const { runId } = await engine.run("workflow1", { key: "value" }); // start by name
-await engine.wait("workflow1", runId);                              // wait for terminal
+await engine.run("workflow1", { key: "value" });   // run by name
 engine.list();                                      // list workflow names
 engine.get("workflow1");                            // get coordinator handle
 ```

@@ -7,7 +7,6 @@
 
 import { actor } from "rivetkit";
 import type { ZodSchema } from "zod";
-import type { ErrorHandler } from "../types";
 import type { LoopContext, LoopPlanNode, PlanNode, StepPlanNode, StepResult } from "../types";
 import { planSchema } from "../types";
 import { buildStepContext } from "./context-builder";
@@ -27,11 +26,6 @@ export interface WorkflowCoordinatorState {
 	input: unknown;
 	stepResults: Record<string, StepResult>;
 	currentStepIndex: number;
-	activeStepName: string | null;
-	activeStepActorRef: string | null;
-	activeStepActorKey: string | null;
-	executionToken: number;
-	activeLoop: ActiveLoopRuntime | null;
 	startedAt: number | null;
 	completedAt: number | null;
 	error: string | null;
@@ -42,7 +36,7 @@ export interface WorkflowCoordinatorState {
  * Result of workflow execution.
  */
 export interface WorkflowExecutionResult {
-	status: "running" | "completed" | "failed" | "cancelled";
+	status: "completed" | "failed" | "cancelled";
 	results?: Record<string, StepResult>;
 	error?: string;
 	failedStep?: string;
@@ -62,7 +56,6 @@ type StepActorHandle = {
 			coordinatorKey?: string,
 		) => Promise<StepExecutionKickoffResult>;
 		getTerminalResult: () => Promise<StepExecutionTerminalResult | null>;
-		cancel?: () => Promise<void>;
 	};
 };
 
@@ -75,24 +68,12 @@ interface IterationResult {
 	results: Record<string, StepResult>;
 }
 
-interface ActiveLoopRuntime {
-	nodeIndex: number;
-	mode: "sequential" | "parallel";
-	items: unknown[];
-	nextIndex: number;
-	iterations: IterationResult[];
-	hardFailure: boolean;
-	firstHardFailureError: string | null;
-	loopKeyPrefix: string;
-}
-
 interface PlanExecutionFrame {
 	client: Record<string, unknown>;
 	workflowId: string;
 	input: unknown;
 	baseStepResults: Record<string, StepResult>;
 	loopContext?: LoopContext;
-	loopKeyPrefix?: string;
 }
 
 interface PlanExecutionOptions {
@@ -116,12 +97,7 @@ export function createWorkflowCoordinator(
 	workflowName: string,
 	plan: PlanNode[],
 	inputSchema?: ZodSchema,
-	workflowOnError?: ErrorHandler,
 ) {
-	function nextExecutionToken(current: number | undefined): number {
-		return Number.isFinite(current) ? (current as number) + 1 : 1;
-	}
-
 	// Validate plan structure and unique step names
 	const result = planSchema.safeParse(plan);
 	if (!result.success) {
@@ -168,7 +144,14 @@ export function createWorkflowCoordinator(
 			loopContext,
 		});
 
-		await stepActor.execute(context, node.config, workflowId, node.name);
+		await stepActor.execute(
+			context,
+			node.config,
+			workflowId,
+			node.name,
+			`${workflowName}_coordinator`,
+			workflowId,
+		);
 
 		const execResult = await waitForStepTerminal(stepActor);
 
@@ -196,37 +179,7 @@ export function createWorkflowCoordinator(
 		for (;;) {
 			const terminal = await stepActor.getTerminalResult();
 			if (terminal) return terminal;
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
-	}
-
-	async function invokeWorkflowOnError(
-		c: {
-			state: WorkflowCoordinatorState;
-		},
-		errorMessage: string,
-		failedStep: string,
-	) {
-		if (!workflowOnError) return;
-		try {
-			await workflowOnError({
-				error: new Error(errorMessage),
-				failedStep: {
-					result: c.state.stepResults[failedStep]?.result,
-					state: c.state.stepResults[failedStep]?.state ?? {},
-					stepName: failedStep,
-					status: c.state.stepResults[failedStep]?.status ?? "failed",
-				},
-				workflowState: {
-					input: c.state.input,
-					steps: c.state.stepResults,
-					status: c.state.status,
-					runId: c.state.workflowId,
-					workflowName,
-				},
-			});
-		} catch {
-			console.error(`[${workflowName}/${c.state.workflowId}] Workflow onError handler failed`);
+			await sleep(25);
 		}
 	}
 
@@ -286,7 +239,6 @@ export function createWorkflowCoordinator(
 					frame.input,
 					mergedStepResults,
 					frame.loopContext,
-					frame.loopKeyPrefix,
 				);
 
 				if (!loopResult.ok) {
@@ -337,13 +289,11 @@ export function createWorkflowCoordinator(
 		input: unknown,
 		parentStepResults: Record<string, StepResult>,
 		parentLoopContext?: LoopContext,
-		parentLoopKeyPrefix?: string,
 	): Promise<
 		{ ok: true; loopResult: StepResult } | { ok: false; error: string; loopResult?: StepResult }
 	> {
 		const loopName = node.name;
 		const mode = node.parallel ? "parallel" : "sequential";
-		const loopKeyPrefix = `${parentLoopKeyPrefix || ""}${loopName}-`;
 
 		// 1. Execute iterator actor to get items
 		const iteratorHandle = getStepActorHandle(client, node.iteratorActorRef);
@@ -354,7 +304,7 @@ export function createWorkflowCoordinator(
 			};
 		}
 
-		const iteratorKey = `${workflowId}-${loopKeyPrefix}iterator`;
+		const iteratorKey = `${workflowId}-${loopName}-iterator`;
 		const iteratorActor = iteratorHandle.getOrCreate(iteratorKey);
 		const iteratorContext = buildStepContext({
 			input,
@@ -404,7 +354,6 @@ export function createWorkflowCoordinator(
 				workflowId,
 				input,
 				parentStepResults,
-				loopKeyPrefix,
 			);
 		}
 
@@ -416,7 +365,6 @@ export function createWorkflowCoordinator(
 			workflowId,
 			input,
 			parentStepResults,
-			loopKeyPrefix,
 		);
 	}
 
@@ -431,14 +379,11 @@ export function createWorkflowCoordinator(
 		workflowId: string,
 		input: unknown,
 		parentStepResults: Record<string, StepResult>,
-		loopKeyPrefix: string,
 	): Promise<
 		{ ok: true; loopResult: StepResult } | { ok: false; error: string; loopResult?: StepResult }
 	> {
 		const iterations: IterationResult[] = [];
 
-		// Nested loop bodies still execute synchronously within a single action.
-		// Top-level loops are continuation-driven via `_continueLoop`.
 		for (let idx = 0; idx < items.length; idx++) {
 			const item = items[idx];
 			const iterationStepResults: Record<string, StepResult> = {};
@@ -457,10 +402,9 @@ export function createWorkflowCoordinator(
 					input,
 					baseStepResults: parentStepResults,
 					loopContext,
-					loopKeyPrefix: `${loopKeyPrefix}iter${idx}-`,
 				},
 				{
-					stepKeyForNode: (stepNode) => `${workflowId}-${loopKeyPrefix}iter${idx}-${stepNode.name}`,
+					stepKeyForNode: (stepNode) => `${workflowId}-${loopName}-iter${idx}-${stepNode.name}`,
 					unsupportedNodeBehavior: "fail",
 				},
 			);
@@ -502,7 +446,6 @@ export function createWorkflowCoordinator(
 		workflowId: string,
 		input: unknown,
 		parentStepResults: Record<string, StepResult>,
-		loopKeyPrefix: string,
 	): Promise<
 		{ ok: true; loopResult: StepResult } | { ok: false; error: string; loopResult?: StepResult }
 	> {
@@ -519,10 +462,9 @@ export function createWorkflowCoordinator(
 					input,
 					baseStepResults: parentSnapshot,
 					loopContext,
-					loopKeyPrefix: `${loopKeyPrefix}iter${idx}-`,
 				},
 				{
-					stepKeyForNode: (stepNode) => `${workflowId}-${loopKeyPrefix}iter${idx}-${stepNode.name}`,
+					stepKeyForNode: (stepNode) => `${workflowId}-${loopName}-iter${idx}-${stepNode.name}`,
 					unsupportedNodeBehavior: "fail",
 				},
 			);
@@ -588,11 +530,6 @@ export function createWorkflowCoordinator(
 			input: {} as unknown,
 			stepResults: {} as Record<string, StepResult>,
 			currentStepIndex: 0,
-			activeStepName: null as string | null,
-			activeStepActorRef: null as string | null,
-			activeStepActorKey: null as string | null,
-			executionToken: 0,
-			activeLoop: null as ActiveLoopRuntime | null,
 			startedAt: null as number | null,
 			completedAt: null as number | null,
 			error: null as string | null,
@@ -620,9 +557,6 @@ export function createWorkflowCoordinator(
 					if (!parseResult.success) {
 						c.state.status = "failed";
 						c.state.error = `Input validation failed: ${parseResult.error.message}`;
-						c.state.failedStep = "__input__";
-						c.state.completedAt = Date.now();
-						await invokeWorkflowOnError(c, c.state.error, "__input__");
 						return { status: "failed", error: c.state.error };
 					}
 					input = parseResult.data;
@@ -633,16 +567,8 @@ export function createWorkflowCoordinator(
 				c.state.workflowId = workflowId;
 				c.state.input = input;
 				c.state.startedAt = Date.now();
-				c.state.completedAt = null;
 				c.state.stepResults = {};
 				c.state.currentStepIndex = 0;
-				c.state.activeStepName = null;
-				c.state.activeStepActorRef = null;
-				c.state.activeStepActorKey = null;
-				c.state.activeLoop = null;
-				c.state.error = null;
-				c.state.failedStep = null;
-				c.state.executionToken = nextExecutionToken(c.state.executionToken);
 
 				// Log plan summary
 				const nodeNames = plan.map((n) => {
@@ -653,280 +579,49 @@ export function createWorkflowCoordinator(
 
 				console.log(`[${workflowName}/${workflowId}] Starting workflow`);
 				console.log(`[${workflowName}/${workflowId}] Plan: ${nodeNames.join(" → ")}`);
-				await c.schedule.after(0, "_continue", c.state.executionToken);
-				return { status: "running" };
-			},
 
-			_continue: async (c, token: number): Promise<void> => {
-				if (c.state.executionToken !== token || c.state.status !== "running") {
-					return;
-				}
-
-				if (c.state.currentStepIndex >= plan.length) {
-					c.state.status = "completed";
-					c.state.completedAt = Date.now();
-					c.state.activeStepName = null;
-					c.state.activeStepActorRef = null;
-					c.state.activeStepActorKey = null;
-					c.state.activeLoop = null;
-					console.log(`[${workflowName}/${c.state.workflowId}] Workflow completed!`);
-					return;
-				}
-
-				const node = plan[c.state.currentStepIndex];
-				if (!node) {
-					c.state.currentStepIndex += 1;
-					await c.schedule.after(0, "_continue", token);
-					return;
-				}
-
-				if (node.type === "step") {
-					const client = c.client() as Record<string, unknown>;
-					const handle = getStepActorHandle(client, node.actorRef);
-					if (!handle) {
-						c.state.stepResults[node.name] = {
-							result: undefined,
-							state: {},
-							status: "failed",
-						};
-						c.state.status = "failed";
-						c.state.error = `Actor ref "${node.actorRef}" not found in registry`;
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-						await invokeWorkflowOnError(c, c.state.error, node.name);
-						return;
-					}
-
-					const stepKey = `${c.state.workflowId}-${node.name}`;
-					const stepActor = handle.getOrCreate(stepKey);
-					const context = buildStepContext({
-						input: c.state.input,
-						stepResults: c.state.stepResults,
-					});
-
-					c.state.activeStepName = node.name;
-					c.state.activeStepActorRef = node.actorRef;
-					c.state.activeStepActorKey = stepKey;
-					await stepActor.execute(
-						context,
-						node.config,
-						c.state.workflowId,
-						node.name,
-						c.name,
-						c.state.workflowId,
-					);
-					return;
-				}
-
-				if (node.type === "loop") {
-					const client = c.client() as Record<string, unknown>;
-					const iteratorHandle = getStepActorHandle(client, node.iteratorActorRef);
-					if (!iteratorHandle) {
-						c.state.stepResults[node.name] = {
-							result: undefined,
-							state: {},
-							status: "failed",
-						};
-						c.state.status = "failed";
-						c.state.error = `Iterator actor ref "${node.iteratorActorRef}" not found in registry`;
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-						await invokeWorkflowOnError(c, c.state.error, node.name);
-						return;
-					}
-
-					const loopKeyPrefix = `${node.name}-`;
-					const iteratorKey = `${c.state.workflowId}-${loopKeyPrefix}iterator`;
-					const iteratorActor = iteratorHandle.getOrCreate(iteratorKey);
-					const iteratorContext = buildStepContext({
-						input: c.state.input,
-						stepResults: c.state.stepResults,
-					});
-					await iteratorActor.execute(
-						iteratorContext,
-						undefined,
-						c.state.workflowId,
-						`${node.name}:iterator`,
-					);
-					const iteratorResult = await waitForStepTerminal(iteratorActor);
-
-					if (iteratorResult.status === "failed") {
-						c.state.stepResults[node.name] = {
-							result: undefined,
-							state: {},
-							status: "failed",
-						};
-						c.state.status = "failed";
-						c.state.error = iteratorResult.error ?? "Iterator failed";
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-						await invokeWorkflowOnError(c, c.state.error, node.name);
-						return;
-					}
-
-					const items = iteratorResult.result;
-					if (!Array.isArray(items)) {
-						c.state.stepResults[node.name] = {
-							result: undefined,
-							state: {},
-							status: "failed",
-						};
-						c.state.status = "failed";
-						c.state.error = `forEach "${node.name}": iterator must return an array, got ${typeof items}`;
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-						await invokeWorkflowOnError(c, c.state.error, node.name);
-						return;
-					}
-
-					c.state.activeLoop = {
-						nodeIndex: c.state.currentStepIndex,
-						mode: node.parallel ? "parallel" : "sequential",
-						items,
-						nextIndex: 0,
-						iterations: [],
-						hardFailure: false,
-						firstHardFailureError: null,
-						loopKeyPrefix,
-					};
-					await c.schedule.after(0, "_continueLoop", token);
-					return;
-				}
-
-				c.state.currentStepIndex += 1;
-				await c.schedule.after(0, "_continue", token);
-			},
-
-			_continueLoop: async (c, token: number): Promise<void> => {
-				if (c.state.executionToken !== token || c.state.status !== "running") return;
-
-				const runtime = c.state.activeLoop;
-				if (!runtime) {
-					await c.schedule.after(0, "_continue", token);
-					return;
-				}
-
-				const node = plan[runtime.nodeIndex];
-				if (!node || node.type !== "loop") {
-					c.state.activeLoop = null;
-					await c.schedule.after(0, "_continue", token);
-					return;
-				}
-
-				if (runtime.items.length === 0) {
-					c.state.stepResults[node.name] = {
-						result: { iterations: [] },
-						state: {},
-						status: "completed",
-					};
-					c.state.activeLoop = null;
-					c.state.currentStepIndex += 1;
-					await c.schedule.after(0, "_continue", token);
-					return;
-				}
-
-				if (runtime.nextIndex >= runtime.items.length) {
-					const status: "completed" | "failed" = runtime.hardFailure ? "failed" : "completed";
-					c.state.stepResults[node.name] = {
-						result: { iterations: runtime.iterations },
-						state: {},
-						status,
-					};
-
-					c.state.activeLoop = null;
-
-					if (status === "failed") {
-						c.state.status = "failed";
-						c.state.error =
-							runtime.firstHardFailureError ?? `Loop "${node.name}" had a failed iteration`;
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-						await invokeWorkflowOnError(c, c.state.error, node.name);
-						return;
-					}
-
-					c.state.currentStepIndex += 1;
-					await c.schedule.after(0, "_continue", token);
-					return;
-				}
-
-				const idx = runtime.nextIndex;
-				const item = runtime.items[idx];
-				const loopContext: LoopContext = { item, index: idx, items: runtime.items };
-				const iterationResult = await executePlanNodes(
-					node.do,
+				const client = c.client() as Record<string, unknown>;
+				const executionResult = await executePlanNodes(
+					plan,
 					{
-						client: c.client() as Record<string, unknown>,
-						workflowId: c.state.workflowId,
+						client,
+						workflowId,
 						input: c.state.input,
 						baseStepResults: c.state.stepResults,
-						loopContext,
-						loopKeyPrefix: `${runtime.loopKeyPrefix}iter${idx}-`,
 					},
 					{
-						stepKeyForNode: (stepNode) =>
-							`${c.state.workflowId}-${runtime.loopKeyPrefix}iter${idx}-${stepNode.name}`,
-						unsupportedNodeBehavior: "fail",
+						stepKeyForNode: (stepNode) => `${workflowId}-${stepNode.name}`,
+						unsupportedNodeBehavior: "skip",
+						onNodeStart: (_, i) => {
+							c.state.currentStepIndex = i;
+						},
 					},
 				);
 
-				runtime.iterations.push({
-					item,
-					index: idx,
-					results: iterationResult.stepResults,
-				});
-				runtime.nextIndex += 1;
-
-				if (!iterationResult.ok) {
-					runtime.hardFailure = true;
-					runtime.firstHardFailureError ??= iterationResult.error;
-					if (runtime.mode === "sequential") {
-						runtime.nextIndex = runtime.items.length;
-					}
-				}
-
-				c.state.activeLoop = runtime;
-				await c.schedule.after(0, "_continueLoop", token);
-			},
-
-			onStepFinished: async (
-				c,
-				stepName: string,
-				status: "completed" | "failed" | "skipped" | "cancelled",
-				result: unknown,
-				error: string | null | undefined,
-				stepState: Record<string, unknown>,
-				continueOnError?: boolean,
-			): Promise<void> => {
-				if (c.state.status !== "running") return;
-				// `activeStepName` acts as the current-run nonce for callbacks:
-				// stale callbacks (from cancelled/replaced runs) are ignored.
-				if (c.state.activeStepName === null || c.state.activeStepName !== stepName) return;
-				// NOTE: step actor `cancel()` does not emit callbacks today, so `cancelled`
-				// is currently defensive typing for forward compatibility.
-
-				c.state.stepResults[stepName] = {
-					result,
-					state: stepState,
-					status,
-				};
-
-				const stepHardFailed = status === "failed" && !continueOnError;
-				c.state.activeStepName = null;
-				c.state.activeStepActorRef = null;
-				c.state.activeStepActorKey = null;
-
-				if (stepHardFailed) {
+				Object.assign(c.state.stepResults, executionResult.stepResults);
+				if (!executionResult.ok) {
 					c.state.status = "failed";
-					c.state.error = error ?? "Step failed";
-					c.state.failedStep = stepName;
+					c.state.error = executionResult.error;
+					c.state.failedStep = executionResult.failedNode;
 					c.state.completedAt = Date.now();
-					await invokeWorkflowOnError(c, c.state.error, stepName);
-					return;
+
+					console.log(
+						`[${workflowName}/${workflowId}] Failed at node: ${executionResult.failedNode}`,
+					);
+					return {
+						status: "failed",
+						error: executionResult.error,
+						failedStep: executionResult.failedNode,
+						results: c.state.stepResults,
+					};
 				}
 
-				c.state.currentStepIndex += 1;
-				await c.schedule.after(0, "_continue", c.state.executionToken);
+				// All steps completed
+				c.state.status = "completed";
+				c.state.completedAt = Date.now();
+
+				console.log(`[${workflowName}/${workflowId}] Workflow completed!`);
+				return { status: "completed", results: c.state.stepResults };
 			},
 
 			/**
@@ -938,11 +633,6 @@ export function createWorkflowCoordinator(
 				input: c.state.input,
 				stepResults: c.state.stepResults,
 				currentStepIndex: c.state.currentStepIndex,
-				activeStepName: c.state.activeStepName,
-				activeStepActorRef: c.state.activeStepActorRef,
-				activeStepActorKey: c.state.activeStepActorKey,
-				executionToken: c.state.executionToken,
-				activeLoop: c.state.activeLoop,
 				startedAt: c.state.startedAt,
 				completedAt: c.state.completedAt,
 				error: c.state.error,
@@ -961,24 +651,6 @@ export function createWorkflowCoordinator(
 
 				c.state.status = "cancelled";
 				c.state.completedAt = Date.now();
-				c.state.executionToken = nextExecutionToken(c.state.executionToken);
-
-				const activeRef = c.state.activeStepActorRef;
-				const activeKey = c.state.activeStepActorKey;
-				c.state.activeStepName = null;
-				c.state.activeStepActorRef = null;
-				c.state.activeStepActorKey = null;
-				c.state.activeLoop = null;
-
-				if (activeRef && activeKey) {
-					try {
-						const client = c.client() as Record<string, unknown>;
-						const handle = getStepActorHandle(client, activeRef);
-						await handle?.getOrCreate(activeKey).cancel?.();
-					} catch {
-						// Best effort only.
-					}
-				}
 
 				// Note: Cannot truly cancel in-flight step execution,
 				// but we mark workflow as cancelled to prevent further steps.
@@ -986,4 +658,8 @@ export function createWorkflowCoordinator(
 			},
 		},
 	});
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
