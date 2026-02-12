@@ -68,16 +68,22 @@ Then `rival(...)` bootstraps a local runtime and exposes a simple API:
 
 2. `src/rival/core/workflow-coordinator.ts`
 - Workflow orchestration state machine.
-- Callback handling (`onStepFinished`).
-- Loop progression logic.
+- Callback handling (`onStepFinished`, `onLoopFinished`).
+- Top-level plan progression + terminal ownership.
+- Delegates all loop nodes to loop coordinators.
 - Terminal status handling and broadcasts.
 
-3. `src/rival/core/step-actor.ts`
+3. `src/rival/core/for-loop-coordinator.ts`
+- Dedicated loop orchestration actor.
+- Handles iterator execution, seq/par iteration progression, nested loop delegation.
+- Tracks per-iteration runtime and loop-local cancellation fan-out.
+
+4. `src/rival/core/step-actor.ts`
 - Step execution actor.
 - Retry/backoff/timeouts via scheduler.
-- Callback to coordinator.
+- Callback to parent coordinator with token guard.
 
-4. `src/rival/core/context-builder.ts`
+5. `src/rival/core/context-builder.ts`
 - Builds the step context object passed to step functions.
 
 ### Types
@@ -105,18 +111,30 @@ Then `rival(...)` bootstraps a local runtime and exposes a simple API:
 ### Callback-driven paths
 
 1. Top-level step progression
-2. Top-level loop iterator progression
-3. Top-level loop body step progression
+2. Top-level loop progression via `ForLoopCoordinator`
+3. Nested loop progression via parent loop coordinator -> child loop coordinator
+4. Step retry/timeout completion callbacks
 
-### Known blocking path
+No known blocking nested-loop orchestration path remains in coordinator actors.
 
-1. Nested loop internals (loop inside loop) still use synchronous helper execution.
+### Nested Loop Call Flow (Current)
 
-Meaning:
-- correctness is maintained
-- cancellation can be deferred while nested loop block is executing
+```mermaid
+sequenceDiagram
+    participant W as WorkflowCoordinator
+    participant L1 as ForLoopCoordinator (outer)
+    participant L2 as ForLoopCoordinator (inner)
+    participant S as StepActor
 
-This refers to Rival forEach nesting, not ordinary JS `for` loops in app code.
+    W->>L1: runLoop(...)
+    L1->>S: execute(iterator,...,token)
+    S-->>L1: onStepFinished(...,token)
+    L1->>L2: runLoop(...) for nested node
+    L2->>S: execute(body step,...,token)
+    S-->>L2: onStepFinished(...,token)
+    L2-->>L1: onLoopFinished(...)
+    L1-->>W: onLoopFinished(...)
+```
 
 ## 5) Wait Semantics
 
@@ -201,12 +219,10 @@ Broadly complete:
 
 1. run + wait API model
 2. event-first wait with polling fallback
-3. callback-driven top-level loop progression
+3. callback-driven loop progression (top-level + nested)
 4. step actor retry/timeout scheduling core
 
 Known follow-up areas:
 
-1. nested loop full async convergence (remove remaining blocking nested path)
-2. event wait warning/noise cleanup in local runtime logs
-3. ongoing docs polish
-
+1. event wait warning/noise cleanup in local runtime logs
+2. ongoing docs polish

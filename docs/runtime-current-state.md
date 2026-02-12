@@ -9,15 +9,22 @@ Rival runs a workflow with two actor layers:
 
 1. **Coordinator actor** (`workflow-coordinator.ts`)
 - Orchestrates the workflow plan.
-- Starts step actors.
+- Starts top-level step actors.
+- Delegates all loop nodes to loop coordinator actors.
 - Tracks workflow state/results.
-- Handles callbacks from step actors.
+- Handles callbacks from step actors and loop coordinators.
 
-2. **Step actors** (`step-actor.ts`)
+2. **Loop coordinator actors** (`for-loop-coordinator.ts`)
+- One actor per loop definition/ref, instantiated per run/key.
+- Execute iterator + body progression for both top-level and nested loops.
+- Spawn child loop coordinators for nested loop nodes.
+- Handle per-loop cancel propagation to active children.
+
+3. **Step actors** (`step-actor.ts`)
 - Execute user step functions.
 - Own retry/timeout scheduling.
 - Persist step-local state.
-- Notify coordinator when terminal.
+- Notify parent coordinator when terminal.
 
 Core rule: coordinator should prefer **message/callback progression** over blocking poll loops.
 
@@ -60,21 +67,38 @@ Relevant options:
 ### Callback-driven now
 
 1. Top-level step progression.
-2. Top-level loop iterator progression.
-3. Top-level loop body step progression.
+2. Top-level loop progression (iterator/body).
+3. Nested loop progression (loop coordinator -> child loop coordinator).
+4. Retry/timeout callbacks from step actors.
 
-### Still blocking by design
+### Blocking loop orchestration path
 
-1. **Nested loop internals** (loop inside loop) currently use the synchronous helper path.
+1. No known blocking loop orchestration path remains in coordinator actors.
+2. Progression is message/callback driven via `schedule.after(0, ...)` and callback actions.
 
-Implication:
-- `cancel()` can be deferred while a nested loop block is running in the coordinator action.
-- This is a known tradeoff, not data corruption.
+## 5) Nested Loop Sequence (Current)
 
-## 5) “Nested Loop Blocking” Clarified
+```mermaid
+sequenceDiagram
+    participant W as WorkflowCoordinator
+    participant L1 as ForLoopCoordinator (outer)
+    participant L2 as ForLoopCoordinator (inner)
+    participant S as StepActor
 
-This refers to Rival `forEach` plan nodes nested inside other Rival `forEach` nodes.
-It does **not** refer to ordinary JavaScript `for` loops in your step code.
+    W->>L1: runLoop(...)
+    L1->>S: execute(iterator,..., parentToken)
+    S-->>L1: onStepFinished(iterator,..., parentToken)
+    L1->>L2: runLoop(...) (nested loop node)
+    L2->>S: execute(body step,..., parentToken)
+    S-->>L2: onStepFinished(..., parentToken)
+    L2-->>L1: onLoopFinished(...)
+    L1-->>W: onLoopFinished(...)
+```
+
+Notes:
+1. Parent/child boundaries are always actor-to-actor actions.
+2. Stale callbacks are ignored by token + callback-name guards.
+3. Workflow-level terminal state is still owned by `WorkflowCoordinator`.
 
 ## 6) Step Retry/Timeout Model
 
@@ -91,8 +115,8 @@ Coordinator callbacks are addressed using persisted `coordinatorRef` + `coordina
 
 1. `cancel()` marks workflow cancelled and bumps execution token.
 2. Pending stale callbacks/schedules no-op by token/key guards.
-3. Active step cancel is best-effort.
-4. If currently in nested-loop blocking section, cancel is processed after that section returns.
+3. Active step/loop cancel is best-effort.
+4. Loop coordinator cancel propagates to active step actors and child loop coordinators.
 
 ## 8) Logging/Names You’ll See
 
@@ -102,25 +126,31 @@ Loop body callback step names are encoded like:
 
 This is intentional for callback correlation and debugging.
 
+Loop callback names are encoded like:
+
+`<loopName>:iter<idx>:node<nodeIdx>:<childLoopName>:loop:<token>`
+
 ## 9) Where To Read Code First
 
 1. `src/rival/engine.ts`
 - Public API and `wait()` strategy.
 
 2. `src/rival/core/workflow-coordinator.ts`
-- Orchestration state machine, callbacks, loop handling.
+- Top-level orchestration + terminal ownership.
 
-3. `src/rival/core/step-actor.ts`
+3. `src/rival/core/for-loop-coordinator.ts`
+- Loop orchestration state machine, nested delegation, loop cancel propagation.
+
+4. `src/rival/core/step-actor.ts`
 - Retry/timeout mechanics and coordinator notification.
 
-4. `test/foreach-loop.test.ts`
+5. `test/foreach-loop.test.ts`
 - Most complete behavior coverage for loop semantics.
 
-5. `test/engine.test.ts`
+6. `test/engine.test.ts`
 - API-level behavior including wait options.
 
 ## 10) Current Known Sharp Edge
 
 Event wait can log subscription-related warnings in some local test/runtime paths while still functioning via fallback.
 Behavior is correct; cleanup of warning/noise is a polish task.
-
