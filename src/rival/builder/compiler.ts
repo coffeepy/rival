@@ -24,11 +24,14 @@ import type {
 	ForEachDefinition,
 	LoopPlanNode,
 	PlanNode,
+	StepActorConfig,
 	StepDefinition,
 	StepFunction,
 	StepPlanNode,
 	WorkflowDefinition,
 } from "../types";
+
+const ACTION_TIMEOUT_BUFFER_MS = 1000;
 
 /**
  * Type guard: is a step entry a ForEachDefinition?
@@ -91,6 +94,37 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 		return `${name}__${parts.join("__")}`;
 	}
 
+	function resolveActorConfig(
+		stepName: string,
+		config?: StepDefinition["config"],
+	): StepActorConfig | undefined {
+		if (!config) return undefined;
+
+		if (config.timeout !== undefined && config.timeout <= 0) {
+			throw new Error(
+				`Workflow "${name}" step "${stepName}" has invalid timeout ${config.timeout}. Timeout must be > 0.`,
+			);
+		}
+		const actorOptions: Record<string, unknown> = { ...(config.actor?.options ?? {}) };
+		const rawActionTimeout = actorOptions.actionTimeout;
+		if (
+			rawActionTimeout !== undefined &&
+			(typeof rawActionTimeout !== "number" || rawActionTimeout <= 0)
+		) {
+			throw new Error(
+				`Workflow "${name}" step "${stepName}" has invalid actor.options.actionTimeout ${String(rawActionTimeout)}. actor.options.actionTimeout must be a positive number.`,
+			);
+		}
+
+		// timeout is the single Rival timeout input. Ensure actor hard timeout
+		// always expires after Rival's graceful timeout handler.
+		if (config.timeout !== undefined) {
+			actorOptions.actionTimeout = config.timeout + ACTION_TIMEOUT_BUFFER_MS;
+		}
+
+		return Object.keys(actorOptions).length > 0 ? { options: actorOptions } : undefined;
+	}
+
 	function compileEntries(
 		entries: (StepDefinition | ForEachDefinition)[],
 		scope: string,
@@ -129,7 +163,8 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 
 			const actorRef =
 				namespace.length === 0 ? `${name}_${entry.name}` : prefixedRef([...namespace, entry.name]);
-			registerActor(actorRef, createStepActor(entry.fn));
+			const actorConfig = resolveActorConfig(entry.name, entry.config);
+			registerActor(actorRef, createStepActor(entry.fn, actorConfig));
 
 			const planNode: StepPlanNode = {
 				type: "step",

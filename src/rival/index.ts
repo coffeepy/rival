@@ -61,6 +61,8 @@ export type {
 	LoopContext,
 	// Step types
 	StepFunction,
+	StepActorConfig,
+	StepActorOptions,
 	StepConfig,
 	StepState,
 	StepResult,

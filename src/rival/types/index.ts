@@ -16,6 +16,8 @@ export type {
 // Step types
 export type {
 	StepFunction,
+	StepActorConfig,
+	StepActorOptions,
 	StepConfig,
 	StepState,
 	StepResult,

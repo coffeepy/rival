@@ -7,7 +7,14 @@
 
 import { actor } from "rivetkit";
 import { createStepLogger } from "../logging/logger";
-import type { LogEntry, StepConfig, StepContext, StepFunction, StepState } from "../types";
+import type {
+	LogEntry,
+	StepActorConfig,
+	StepConfig,
+	StepContext,
+	StepFunction,
+	StepState,
+} from "../types";
 import { StepError } from "../types";
 
 /**
@@ -89,6 +96,7 @@ export type ExecuteContext = Omit<StepContext, "log" | "state">;
  */
 export function createStepActor<TInput = unknown, TResult = unknown>(
 	stepFn: StepFunction<TInput, TResult>,
+	actorConfig?: StepActorConfig,
 ) {
 	function createLogger(c: { state: StepActorState }) {
 		const workflowId = c.state.workflowId ?? "unknown";
@@ -429,6 +437,10 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				}
 			},
 		},
+		options:
+			actorConfig?.options !== undefined
+				? (actorConfig.options as Parameters<typeof actor>[0]["options"])
+				: undefined,
 	});
 }
 

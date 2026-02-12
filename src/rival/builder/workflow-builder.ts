@@ -19,6 +19,7 @@ import type { ZodSchema } from "zod";
 import type {
 	ErrorHandler,
 	ForEachDefinition,
+	StepActorConfig,
 	StepConfig,
 	StepDefinition,
 	StepFunction,
@@ -34,6 +35,7 @@ export type StepInput =
 			fn: StepFunction;
 			name?: string;
 			timeout?: number;
+			actor?: StepActorConfig;
 			maxAttempts?: number;
 			onTimeout?: "stop" | "retry";
 			backoff?: "linear" | "exponential";
@@ -102,12 +104,13 @@ export class WorkflowBuilder {
 			this._steps.push({ fn: stepInput, name });
 		} else {
 			// Object with config
-			const { fn, name, timeout, maxAttempts, onTimeout, backoff, onError } = stepInput;
+			const { fn, name, timeout, actor, maxAttempts, onTimeout, backoff, onError } = stepInput;
 			const stepName = name || fn.name || `step${this._steps.length + 1}`;
 			this._assertUniqueStepName(stepName);
 
 			const config: StepConfig = {};
 			if (timeout !== undefined) config.timeout = timeout;
+			if (actor !== undefined) config.actor = actor;
 			if (maxAttempts !== undefined) config.maxAttempts = maxAttempts;
 			if (onTimeout !== undefined) config.onTimeout = onTimeout;
 			if (backoff !== undefined) config.backoff = backoff;

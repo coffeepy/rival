@@ -18,9 +18,21 @@ export type StepFunction<TInput = unknown, TResult = unknown> = (
 /**
  * Configuration options for a step.
  */
+export interface StepActorOptions {
+	/** Rivet hard action timeout in milliseconds */
+	actionTimeout?: number;
+	[key: string]: unknown;
+}
+
+export interface StepActorConfig {
+	options?: StepActorOptions;
+}
+
 export interface StepConfig {
 	/** Timeout in milliseconds */
 	timeout?: number;
+	/** Escape hatch for underlying Rivet actor options */
+	actor?: StepActorConfig;
 	/** Maximum number of execution attempts */
 	maxAttempts?: number;
 	/** What to do when timeout occurs */
