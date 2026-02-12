@@ -85,9 +85,8 @@ async function testBuilder() {
 	console.log(`  Steps: ${orderWorkflow.steps.length}`);
 
 	for (const step of orderWorkflow.steps) {
-		console.log(
-			`    - ${step.name}${step.config ? ` (config: ${JSON.stringify(step.config)})` : ""}`,
-		);
+		const config = "config" in step ? step.config : undefined;
+		console.log(`    - ${step.name}${config ? ` (config: ${JSON.stringify(config)})` : ""}`);
 	}
 
 	if (orderWorkflow.steps.length !== 3 || !orderWorkflow.inputSchema) {
@@ -96,7 +95,8 @@ async function testBuilder() {
 
 	// Verify step config was applied
 	const paymentStep = orderWorkflow.steps.find((s) => s.name === "processPayment");
-	if (!paymentStep?.config?.timeout || paymentStep.config.timeout !== 30000) {
+	const paymentConfig = paymentStep && "config" in paymentStep ? paymentStep.config : undefined;
+	if (!paymentConfig?.timeout || paymentConfig.timeout !== 30000) {
 		throw new Error("Step config not applied correctly");
 	}
 

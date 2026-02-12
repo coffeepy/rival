@@ -6,7 +6,7 @@
 
 import type { ZodSchema } from "zod";
 import type { PlanNode } from "./plan";
-import type { ErrorHandler, StepDefinition } from "./step";
+import type { ErrorHandler, ForEachDefinition, StepDefinition } from "./step";
 
 /**
  * A workflow definition before compilation.
@@ -15,8 +15,8 @@ import type { ErrorHandler, StepDefinition } from "./step";
 export interface WorkflowDefinition {
 	/** Workflow name (unique identifier) */
 	name: string;
-	/** Step definitions in execution order */
-	steps: StepDefinition[];
+	/** Step and forEach definitions in execution order */
+	steps: (StepDefinition | ForEachDefinition)[];
 	/** Optional Zod schema for input validation */
 	inputSchema?: ZodSchema;
 	/** Optional workflow-level error handler */

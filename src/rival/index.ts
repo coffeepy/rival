@@ -58,6 +58,7 @@ export type {
 	StepLogger,
 	LastStepInfo,
 	LogEntry,
+	LoopContext,
 	// Step types
 	StepFunction,
 	StepConfig,
@@ -65,6 +66,7 @@ export type {
 	StepResult,
 	StepMetrics,
 	StepDefinition,
+	ForEachDefinition,
 	ErrorHandler,
 	// Plan types
 	PlanNode,
@@ -88,7 +90,7 @@ export { planSchema, stepPlanNodeSchema } from "./types";
 
 // Builder API
 export { createWorkflow, WorkflowBuilder } from "./builder/workflow-builder";
-export type { StepInput } from "./builder/workflow-builder";
+export type { StepInput, ForEachInput } from "./builder/workflow-builder";
 
 // Compiler
 export { compileWorkflow, defineWorkflow } from "./builder/compiler";

@@ -7,7 +7,7 @@
 
 import { actor } from "rivetkit";
 import type { ZodSchema } from "zod";
-import type { PlanNode, StepPlanNode, StepResult } from "../types";
+import type { LoopContext, LoopPlanNode, PlanNode, StepPlanNode, StepResult } from "../types";
 import { planSchema } from "../types";
 import { buildStepContext } from "./context-builder";
 import type { ExecuteContext, StepExecutionResult } from "./step-actor";
@@ -38,6 +38,47 @@ export interface WorkflowExecutionResult {
 }
 
 /**
+ * Type for a step actor handle from the rivetkit client.
+ */
+type StepActorHandle = {
+	getOrCreate: (key: string) => {
+		execute: (
+			ctx: ExecuteContext,
+			config?: unknown,
+			wfId?: string,
+			stepName?: string,
+		) => Promise<StepExecutionResult>;
+	};
+};
+
+/**
+ * Iteration result stored in the loop result.
+ */
+interface IterationResult {
+	item: unknown;
+	index: number;
+	results: Record<string, StepResult>;
+}
+
+interface PlanExecutionFrame {
+	client: Record<string, unknown>;
+	workflowId: string;
+	input: unknown;
+	baseStepResults: Record<string, StepResult>;
+	loopContext?: LoopContext;
+}
+
+interface PlanExecutionOptions {
+	stepKeyForNode: (node: StepPlanNode, index: number) => string;
+	unsupportedNodeBehavior: "skip" | "fail";
+	onNodeStart?: (node: PlanNode, index: number) => void;
+}
+
+type PlanExecutionOutcome =
+	| { ok: true; stepResults: Record<string, StepResult> }
+	| { ok: false; error: string; failedNode: string; stepResults: Record<string, StepResult> };
+
+/**
  * Creates a workflow coordinator actor.
  *
  * @param workflowName - Name of the workflow
@@ -54,6 +95,409 @@ export function createWorkflowCoordinator(
 	if (!result.success) {
 		const messages = result.error.issues.map((i) => i.message).join("; ");
 		throw new Error(`Workflow "${workflowName}" has an invalid plan: ${messages}`);
+	}
+
+	/**
+	 * Get a step actor handle from the client, or return an error string.
+	 */
+	function getStepActorHandle(
+		client: Record<string, unknown>,
+		actorRef: string,
+	): StepActorHandle | undefined {
+		return (client as Record<string, unknown>)[actorRef] as StepActorHandle | undefined;
+	}
+
+	/**
+	 * Execute a single step node.
+	 * Returns { ok: true, result } on success/continue, or { ok: false, ... } on hard failure.
+	 */
+	async function executeStepNode(
+		node: StepPlanNode,
+		client: Record<string, unknown>,
+		workflowId: string,
+		input: unknown,
+		stepResults: Record<string, StepResult>,
+		stepKey: string,
+		loopContext?: LoopContext,
+	): Promise<
+		| { ok: true; result: StepExecutionResult; status: "completed" | "failed" | "skipped" }
+		| { ok: false; error: string }
+	> {
+		const handle = getStepActorHandle(client, node.actorRef);
+		if (!handle) {
+			return { ok: false, error: `Actor ref "${node.actorRef}" not found in registry` };
+		}
+
+		const stepActor = handle.getOrCreate(stepKey);
+
+		const context = buildStepContext({
+			input,
+			stepResults,
+			loopContext,
+		});
+
+		const execResult = await stepActor.execute(context, node.config, workflowId, node.name);
+
+		if (execResult.status === "failed" && !execResult.continueOnError) {
+			return { ok: false, error: execResult.error ?? "Step failed" };
+		}
+
+		return { ok: true, result: execResult, status: execResult.status };
+	}
+
+	function toStepResult(
+		stepResult: StepExecutionResult,
+		status: "completed" | "failed" | "skipped",
+	): StepResult {
+		return {
+			result: stepResult.result,
+			state: stepResult.stepState,
+			status,
+		};
+	}
+
+	/**
+	 * Execute a list of plan nodes in order.
+	 */
+	async function executePlanNodes(
+		nodes: PlanNode[],
+		frame: PlanExecutionFrame,
+		options: PlanExecutionOptions,
+	): Promise<PlanExecutionOutcome> {
+		const planStepResults: Record<string, StepResult> = {};
+
+		for (let i = 0; i < nodes.length; i++) {
+			const node = nodes[i];
+			if (!node) continue;
+
+			options.onNodeStart?.(node, i);
+
+			const mergedStepResults = { ...frame.baseStepResults, ...planStepResults };
+
+			if (node.type === "step") {
+				const stepKey = options.stepKeyForNode(node, i);
+				const stepResult = await executeStepNode(
+					node,
+					frame.client,
+					frame.workflowId,
+					frame.input,
+					mergedStepResults,
+					stepKey,
+					frame.loopContext,
+				);
+
+				if (!stepResult.ok) {
+					planStepResults[node.name] = {
+						result: undefined,
+						state: {},
+						status: "failed",
+					};
+					return {
+						ok: false,
+						error: stepResult.error,
+						failedNode: node.name,
+						stepResults: planStepResults,
+					};
+				}
+
+				planStepResults[node.name] = toStepResult(stepResult.result, stepResult.status);
+				continue;
+			}
+
+			if (node.type === "loop") {
+				const loopResult = await executeLoopNode(
+					node,
+					frame.client,
+					frame.workflowId,
+					frame.input,
+					mergedStepResults,
+					frame.loopContext,
+				);
+
+				if (!loopResult.ok) {
+					planStepResults[node.name] = loopResult.loopResult ?? {
+						result: undefined,
+						state: {},
+						status: "failed",
+					};
+					return {
+						ok: false,
+						error: loopResult.error,
+						failedNode: node.name,
+						stepResults: planStepResults,
+					};
+				}
+
+				planStepResults[node.name] = loopResult.loopResult;
+				continue;
+			}
+
+			if (options.unsupportedNodeBehavior === "skip") {
+				continue;
+			}
+
+			planStepResults[node.name] = {
+				result: undefined,
+				state: {},
+				status: "failed",
+			};
+			return {
+				ok: false,
+				error: `Unsupported node type "${node.type}"`,
+				failedNode: node.name,
+				stepResults: planStepResults,
+			};
+		}
+
+		return { ok: true, stepResults: planStepResults };
+	}
+
+	/**
+	 * Execute a loop node (forEach).
+	 */
+	async function executeLoopNode(
+		node: LoopPlanNode,
+		client: Record<string, unknown>,
+		workflowId: string,
+		input: unknown,
+		parentStepResults: Record<string, StepResult>,
+		parentLoopContext?: LoopContext,
+	): Promise<
+		{ ok: true; loopResult: StepResult } | { ok: false; error: string; loopResult?: StepResult }
+	> {
+		const loopName = node.name;
+		const mode = node.parallel ? "parallel" : "sequential";
+
+		// 1. Execute iterator actor to get items
+		const iteratorHandle = getStepActorHandle(client, node.iteratorActorRef);
+		if (!iteratorHandle) {
+			return {
+				ok: false,
+				error: `Iterator actor ref "${node.iteratorActorRef}" not found in registry`,
+			};
+		}
+
+		const iteratorKey = `${workflowId}-${loopName}-iterator`;
+		const iteratorActor = iteratorHandle.getOrCreate(iteratorKey);
+		const iteratorContext = buildStepContext({
+			input,
+			stepResults: parentStepResults,
+			loopContext: parentLoopContext,
+		});
+		const iteratorResult = await iteratorActor.execute(
+			iteratorContext,
+			undefined,
+			workflowId,
+			`${loopName}:iterator`,
+		);
+
+		if (iteratorResult.status === "failed") {
+			return { ok: false, error: iteratorResult.error ?? "Iterator failed" };
+		}
+
+		const items = iteratorResult.result;
+		if (!Array.isArray(items)) {
+			return {
+				ok: false,
+				error: `forEach "${loopName}": iterator must return an array, got ${typeof items}`,
+			};
+		}
+
+		console.log(
+			`[${workflowName}/${workflowId}] Loop "${loopName}": ${items.length} items (${mode})`,
+		);
+
+		// 2. Execute do-nodes for each item
+		const doNodes = node.do;
+
+		if (items.length === 0) {
+			// Empty loop — complete immediately
+			const loopResult: StepResult = {
+				result: { iterations: [] },
+				state: {},
+				status: "completed",
+			};
+			return { ok: true, loopResult };
+		}
+
+		const frozenItems = Object.freeze([...items]);
+
+		if (node.parallel) {
+			return executeLoopParallel(
+				loopName,
+				doNodes,
+				frozenItems,
+				client,
+				workflowId,
+				input,
+				parentStepResults,
+			);
+		}
+
+		return executeLoopSequential(
+			loopName,
+			doNodes,
+			frozenItems,
+			client,
+			workflowId,
+			input,
+			parentStepResults,
+		);
+	}
+
+	/**
+	 * Execute loop iterations sequentially.
+	 */
+	async function executeLoopSequential(
+		loopName: string,
+		doNodes: PlanNode[],
+		items: readonly unknown[],
+		client: Record<string, unknown>,
+		workflowId: string,
+		input: unknown,
+		parentStepResults: Record<string, StepResult>,
+	): Promise<
+		{ ok: true; loopResult: StepResult } | { ok: false; error: string; loopResult?: StepResult }
+	> {
+		const iterations: IterationResult[] = [];
+
+		for (let idx = 0; idx < items.length; idx++) {
+			const item = items[idx];
+			const iterationStepResults: Record<string, StepResult> = {};
+
+			const loopContext: LoopContext = { item, index: idx, items };
+
+			console.log(
+				`[${workflowName}/${workflowId}] Loop "${loopName}": iteration ${idx + 1}/${items.length}`,
+			);
+
+			const iterationResult = await executePlanNodes(
+				doNodes,
+				{
+					client,
+					workflowId,
+					input,
+					baseStepResults: parentStepResults,
+					loopContext,
+				},
+				{
+					stepKeyForNode: (stepNode) => `${workflowId}-${loopName}-iter${idx}-${stepNode.name}`,
+					unsupportedNodeBehavior: "fail",
+				},
+			);
+			Object.assign(iterationStepResults, iterationResult.stepResults);
+
+			if (!iterationResult.ok) {
+				iterations.push({ item, index: idx, results: iterationStepResults });
+				const loopResult: StepResult = {
+					result: { iterations },
+					state: {},
+					status: "failed",
+				};
+				return {
+					ok: false,
+					error: iterationResult.error,
+					loopResult,
+				};
+			}
+
+			iterations.push({ item, index: idx, results: iterationStepResults });
+		}
+
+		const loopResult: StepResult = {
+			result: { iterations },
+			state: {},
+			status: "completed",
+		};
+		return { ok: true, loopResult };
+	}
+
+	/**
+	 * Execute loop iterations in parallel.
+	 */
+	async function executeLoopParallel(
+		loopName: string,
+		doNodes: PlanNode[],
+		items: readonly unknown[],
+		client: Record<string, unknown>,
+		workflowId: string,
+		input: unknown,
+		parentStepResults: Record<string, StepResult>,
+	): Promise<
+		{ ok: true; loopResult: StepResult } | { ok: false; error: string; loopResult?: StepResult }
+	> {
+		const iterationPromises = items.map(async (item, idx) => {
+			// Shallow copy parent results to prevent cross-iteration mutation
+			const parentSnapshot = { ...parentStepResults };
+			const loopContext: LoopContext = { item, index: idx, items };
+
+			const iterationResult = await executePlanNodes(
+				doNodes,
+				{
+					client,
+					workflowId,
+					input,
+					baseStepResults: parentSnapshot,
+					loopContext,
+				},
+				{
+					stepKeyForNode: (stepNode) => `${workflowId}-${loopName}-iter${idx}-${stepNode.name}`,
+					unsupportedNodeBehavior: "fail",
+				},
+			);
+
+			return {
+				item,
+				index: idx,
+				results: iterationResult.stepResults,
+				hardFailure: !iterationResult.ok,
+				hardFailureError: iterationResult.ok ? undefined : iterationResult.error,
+			};
+		});
+
+		const settled = await Promise.allSettled(iterationPromises);
+		const iterations: IterationResult[] = [];
+		let anyHardFailure = false;
+		let firstHardFailureError: string | undefined;
+
+		for (const s of settled) {
+			if (s.status === "fulfilled") {
+				iterations.push({
+					item: s.value.item,
+					index: s.value.index,
+					results: s.value.results,
+				});
+				if (s.value.hardFailure) {
+					anyHardFailure = true;
+					firstHardFailureError ??= s.value.hardFailureError;
+				}
+			} else {
+				anyHardFailure = true;
+				firstHardFailureError ??= s.reason instanceof Error ? s.reason.message : String(s.reason);
+			}
+		}
+
+		// Sort by index to maintain deterministic order
+		iterations.sort((a, b) => a.index - b.index);
+
+		console.log(
+			`[${workflowName}/${workflowId}] Loop "${loopName}": all ${items.length} parallel iterations complete`,
+		);
+
+		const loopResult: StepResult = {
+			result: { iterations },
+			state: {},
+			status: anyHardFailure ? "failed" : "completed",
+		};
+		if (anyHardFailure) {
+			return {
+				ok: false,
+				error: firstHardFailureError ?? `Loop "${loopName}" had a failed iteration`,
+				loopResult,
+			};
+		}
+
+		return { ok: true, loopResult };
 	}
 
 	return actor({
@@ -103,96 +547,50 @@ export function createWorkflowCoordinator(
 				c.state.stepResults = {};
 				c.state.currentStepIndex = 0;
 
-				const stepNodes = plan.filter((n): n is StepPlanNode => n.type === "step");
-				const stepNames = stepNodes.map((n) => n.name);
+				// Log plan summary
+				const nodeNames = plan.map((n) => {
+					if (n.type === "step") return n.name;
+					if (n.type === "loop") return `forEach(${n.name})`;
+					return n.name;
+				});
 
 				console.log(`[${workflowName}/${workflowId}] Starting workflow`);
-				console.log(`[${workflowName}/${workflowId}] Plan: ${stepNames.join(" → ")}`);
+				console.log(`[${workflowName}/${workflowId}] Plan: ${nodeNames.join(" → ")}`);
 
-				const client = c.client();
-
-				// Execute plan nodes sequentially
-				for (let i = 0; i < plan.length; i++) {
-					const node = plan[i];
-					if (!node || node.type !== "step") {
-						// TODO: Handle branch, loop, parallel in future phases
-						continue;
-					}
-
-					c.state.currentStepIndex = i;
-					console.log(`[${workflowName}/${workflowId}] Executing: ${node.name}`);
-
-					// Get the step actor reference from client using dynamic property access
-					const stepActorRef = (client as Record<string, unknown>)[node.actorRef] as
-						| {
-								getOrCreate: (key: string) => {
-									execute: (
-										ctx: ExecuteContext,
-										config?: unknown,
-										wfId?: string,
-										stepName?: string,
-									) => Promise<StepExecutionResult>;
-								};
-						  }
-						| undefined;
-
-					if (!stepActorRef) {
-						c.state.status = "failed";
-						c.state.error = `Actor ref "${node.actorRef}" not found in registry`;
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-
-						console.log(`[${workflowName}/${workflowId}] Failed: ${c.state.error}`);
-						return { status: "failed", error: c.state.error, failedStep: node.name };
-					}
-
-					// Create step instance with unique key
-					const stepKey = `${workflowId}-${node.name}`;
-					const stepActor = stepActorRef.getOrCreate(stepKey);
-
-					// Build context from current workflow state
-					const context = buildStepContext({
+				const client = c.client() as Record<string, unknown>;
+				const executionResult = await executePlanNodes(
+					plan,
+					{
+						client,
+						workflowId,
 						input: c.state.input,
-						stepResults: c.state.stepResults,
-					});
+						baseStepResults: c.state.stepResults,
+					},
+					{
+						stepKeyForNode: (stepNode) => `${workflowId}-${stepNode.name}`,
+						unsupportedNodeBehavior: "skip",
+						onNodeStart: (_, i) => {
+							c.state.currentStepIndex = i;
+						},
+					},
+				);
 
-					// Execute step
-					const result = await stepActor.execute(context, node.config, workflowId, node.name);
+				Object.assign(c.state.stepResults, executionResult.stepResults);
+				if (!executionResult.ok) {
+					c.state.status = "failed";
+					c.state.error = executionResult.error;
+					c.state.failedStep = executionResult.failedNode;
+					c.state.completedAt = Date.now();
 
-					// Handle result
-					if (result.status === "failed" && !result.continueOnError) {
-						c.state.status = "failed";
-						c.state.error = result.error ?? "Step failed";
-						c.state.failedStep = node.name;
-						c.state.completedAt = Date.now();
-
-						console.log(`[${workflowName}/${workflowId}] Failed at step: ${node.name}`);
-						return {
-							status: "failed",
-							error: result.error,
-							failedStep: node.name,
-							results: c.state.stepResults,
-						};
-					}
-
-					if (result.status === "failed" && result.continueOnError) {
-						c.state.stepResults[node.name] = {
-							result: result.result,
-							state: result.stepState,
-							status: "failed",
-						};
-						console.log(`[${workflowName}/${workflowId}] Step failed (continue): ${node.name}`);
-						continue;
-					}
-
-					// Store step result
-					c.state.stepResults[node.name] = {
-						result: result.result,
-						state: result.stepState,
-						status: result.status,
+					console.log(
+						`[${workflowName}/${workflowId}] Failed at node: ${executionResult.failedNode}`,
+					);
+					return {
+						status: "failed",
+						error: executionResult.error,
+						failedStep: executionResult.failedNode,
+						results: c.state.stepResults,
 					};
-
-					console.log(`[${workflowName}/${workflowId}] Completed: ${node.name}`);
 				}
 
 				// All steps completed

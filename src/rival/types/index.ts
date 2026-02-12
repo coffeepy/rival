@@ -10,6 +10,7 @@ export type {
 	StepLogger,
 	LastStepInfo,
 	LogEntry,
+	LoopContext,
 } from "./context";
 
 // Step types
@@ -20,6 +21,7 @@ export type {
 	StepResult,
 	StepMetrics,
 	StepDefinition,
+	ForEachDefinition,
 	ErrorHandler,
 } from "./step";
 

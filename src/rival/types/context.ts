@@ -33,6 +33,18 @@ export interface LastStepInfo {
 }
 
 /**
+ * Loop context provided to steps executing inside a forEach loop.
+ */
+export interface LoopContext {
+	/** The current item being processed */
+	item: unknown;
+	/** The index of the current item (0-based) */
+	index: number;
+	/** The full items array (readonly to prevent mutation) */
+	items: readonly unknown[];
+}
+
+/**
  * The context object passed to every step function.
  *
  * @template TInput - The type of the workflow input
@@ -52,6 +64,9 @@ export interface StepContext<TInput = unknown> {
 
 	/** Structured logger (Pino-based) */
 	log: StepLogger;
+
+	/** Loop context when executing inside a forEach loop */
+	loop?: LoopContext;
 }
 
 /**

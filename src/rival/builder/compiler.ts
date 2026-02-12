@@ -19,7 +19,34 @@
 
 import { createStepActor } from "../core/step-actor";
 import { createWorkflowCoordinator } from "../core/workflow-coordinator";
-import type { CompiledWorkflow, PlanNode, StepPlanNode, WorkflowDefinition } from "../types";
+import type {
+	CompiledWorkflow,
+	ForEachDefinition,
+	LoopPlanNode,
+	PlanNode,
+	StepDefinition,
+	StepFunction,
+	StepPlanNode,
+	WorkflowDefinition,
+} from "../types";
+
+/**
+ * Type guard: is a step entry a ForEachDefinition?
+ */
+export function isForEachDefinition(
+	entry: StepDefinition | ForEachDefinition,
+): entry is ForEachDefinition {
+	return "type" in entry && entry.type === "forEach";
+}
+
+/**
+ * Type guard for forEach `do` shape.
+ */
+function isWorkflowDefinition(
+	value: StepFunction | WorkflowDefinition,
+): value is WorkflowDefinition {
+	return typeof value !== "function";
+}
 
 /**
  * Compile a workflow definition into actors and a plan.
@@ -35,37 +62,88 @@ import type { CompiledWorkflow, PlanNode, StepPlanNode, WorkflowDefinition } fro
 export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflow {
 	const { name, steps, inputSchema, description } = definition;
 
-	// Validate no duplicate step names
-	const seen = new Set<string>();
-	for (const step of steps) {
-		if (seen.has(step.name)) {
-			throw new Error(
-				`Workflow "${name}" has duplicate step name "${step.name}". Step names must be unique.`,
-			);
-		}
-		seen.add(step.name);
-	}
-
 	// Build actors and plan nodes
 	const actors: Record<string, unknown> = {};
-	const plan: PlanNode[] = [];
 
-	for (const step of steps) {
-		// Generate unique actor ref: {workflowName}_{stepName}
-		const actorRef = `${name}_${step.name}`;
-
-		// Create step actor with function BAKED IN
-		actors[actorRef] = createStepActor(step.fn);
-
-		// Add to plan (referencing actor by registry key string)
-		const planNode: StepPlanNode = {
-			type: "step",
-			name: step.name,
-			actorRef: actorRef,
-			config: step.config,
-		};
-		plan.push(planNode);
+	function registerActor(ref: string, actorDef: unknown): void {
+		if (ref in actors) {
+			throw new Error(`Workflow "${name}" has duplicate actor ref: "${ref}"`);
+		}
+		actors[ref] = actorDef;
 	}
+
+	function validateUniqueNames(
+		entries: (StepDefinition | ForEachDefinition)[],
+		scope: string,
+	): void {
+		const seen = new Set<string>();
+		for (const entry of entries) {
+			if (seen.has(entry.name)) {
+				throw new Error(
+					`Workflow "${name}" has duplicate step name "${entry.name}" in ${scope}. Step names must be unique within a scope.`,
+				);
+			}
+			seen.add(entry.name);
+		}
+	}
+
+	function prefixedRef(parts: string[]): string {
+		return `${name}__${parts.join("__")}`;
+	}
+
+	function compileEntries(
+		entries: (StepDefinition | ForEachDefinition)[],
+		scope: string,
+		namespace: string[] = [],
+	): PlanNode[] {
+		validateUniqueNames(entries, scope);
+
+		const compiled: PlanNode[] = [];
+
+		for (const entry of entries) {
+			if (isForEachDefinition(entry)) {
+				const loopName = entry.name;
+				const loopNamespace = [...namespace, "loop", loopName];
+				const iteratorActorRef = prefixedRef([...loopNamespace, "iterator"]);
+				registerActor(iteratorActorRef, createStepActor(entry.items));
+
+				const doEntries: (StepDefinition | ForEachDefinition)[] = isWorkflowDefinition(entry.do)
+					? entry.do.steps
+					: [{ fn: entry.do, name: entry.do.name || "do" }];
+
+				const doPlan = compileEntries(doEntries, `${scope} -> forEach("${loopName}") do`, [
+					...loopNamespace,
+					"do",
+				]);
+
+				const loopNode: LoopPlanNode = {
+					type: "loop",
+					name: loopName,
+					iteratorActorRef,
+					do: doPlan,
+					parallel: entry.parallel,
+				};
+				compiled.push(loopNode);
+				continue;
+			}
+
+			const actorRef =
+				namespace.length === 0 ? `${name}_${entry.name}` : prefixedRef([...namespace, entry.name]);
+			registerActor(actorRef, createStepActor(entry.fn));
+
+			const planNode: StepPlanNode = {
+				type: "step",
+				name: entry.name,
+				actorRef,
+				config: entry.config,
+			};
+			compiled.push(planNode);
+		}
+
+		return compiled;
+	}
+
+	const plan = compileEntries(steps, "top-level");
 
 	// Create the coordinator actor
 	const coordinatorActorRef = `${name}_coordinator`;
