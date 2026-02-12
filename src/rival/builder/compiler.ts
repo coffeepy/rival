@@ -63,7 +63,7 @@ function isWorkflowDefinition(
  * @returns A compiled workflow ready for registration
  */
 export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflow {
-	const { name, steps, inputSchema, description } = definition;
+	const { name, steps, inputSchema, onError, description } = definition;
 
 	// Build actors and plan nodes
 	const actors: Record<string, unknown> = {};
@@ -182,7 +182,7 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 
 	// Create the coordinator actor
 	const coordinatorActorRef = `${name}_coordinator`;
-	actors[coordinatorActorRef] = createWorkflowCoordinator(name, plan, inputSchema);
+	actors[coordinatorActorRef] = createWorkflowCoordinator(name, plan, inputSchema, onError);
 
 	return {
 		name,

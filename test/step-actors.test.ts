@@ -179,6 +179,39 @@ const registry = setup({
 	},
 });
 
+async function waitForTerminal(instance: {
+	getState: () => Promise<{
+		status: string;
+		stepResults: Record<string, { status?: string; result?: unknown }>;
+		error: string | null;
+		failedStep: string | null;
+	}>;
+}): Promise<{
+	status: string;
+	results?: Record<string, { status?: string; result?: unknown }>;
+	error?: string;
+	failedStep?: string;
+}> {
+	for (;;) {
+		const state = await instance.getState();
+		if (state.status === "completed") {
+			return { status: "completed", results: state.stepResults };
+		}
+		if (state.status === "failed") {
+			return {
+				status: "failed",
+				error: state.error ?? undefined,
+				failedStep: state.failedStep ?? undefined,
+				results: state.stepResults,
+			};
+		}
+		if (state.status === "cancelled") {
+			return { status: "cancelled", results: state.stepResults };
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
 // =============================================================================
 // RUN TESTS
 // =============================================================================
@@ -192,12 +225,15 @@ async function main() {
 		disableDefaultServer: true,
 		noWelcome: true,
 	});
+	const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 	// Test 1: Happy Path
 	console.log("--- TEST 1: Happy Path ---\n");
 
-	const wf1 = client.happyPathCoordinator.getOrCreate("test-happy");
-	const result1 = await wf1.run("test-happy", { location: "forest-north" });
+	const runId1 = `test-happy-${runSuffix}`;
+	const wf1 = client.happyPathCoordinator.getOrCreate(runId1);
+	await wf1.run(runId1, { location: "forest-north" });
+	const result1 = await waitForTerminal(wf1);
 
 	console.log("\nResult:", JSON.stringify(result1, null, 2));
 	console.log("---\n");
@@ -205,8 +241,10 @@ async function main() {
 	// Test 2: Failure Handling
 	console.log("--- TEST 2: Failure Handling ---\n");
 
-	const wf2 = client.failureCoordinator.getOrCreate("test-fail");
-	const result2 = await wf2.run("test-fail", { location: "forest-south" });
+	const runId2 = `test-fail-${runSuffix}`;
+	const wf2 = client.failureCoordinator.getOrCreate(runId2);
+	await wf2.run(runId2, { location: "forest-south" });
+	const result2 = await waitForTerminal(wf2);
 
 	console.log("\nResult:", JSON.stringify(result2, null, 2));
 	console.log("---\n");
@@ -215,8 +253,10 @@ async function main() {
 	console.log("--- TEST 3: Retry Behavior ---\n");
 
 	flakyAttempts = 0; // Reset
-	const wf3 = client.retryCoordinator.getOrCreate("test-retry");
-	const result3 = await wf3.run("test-retry", {});
+	const runId3 = `test-retry-${runSuffix}`;
+	const wf3 = client.retryCoordinator.getOrCreate(runId3);
+	await wf3.run(runId3, {});
+	const result3 = await waitForTerminal(wf3);
 
 	console.log("\nResult:", JSON.stringify(result3, null, 2));
 	console.log("---\n");
@@ -224,8 +264,10 @@ async function main() {
 	// Test 4: Skip Step
 	console.log("--- TEST 4: Skip Step ---\n");
 
-	const wf4 = client.skipCoordinator.getOrCreate("test-skip");
-	const result4 = await wf4.run("test-skip", { location: "forest-east" });
+	const runId4 = `test-skip-${runSuffix}`;
+	const wf4 = client.skipCoordinator.getOrCreate(runId4);
+	await wf4.run(runId4, { location: "forest-east" });
+	const result4 = await waitForTerminal(wf4);
 
 	console.log("\nResult:", JSON.stringify(result4, null, 2));
 	console.log("---\n");
@@ -233,8 +275,10 @@ async function main() {
 	// Test 5: Continue on Error (middle step)
 	console.log("--- TEST 5: Continue on Error (middle step) ---\n");
 
-	const wf5 = client.continueOnErrorCoordinator.getOrCreate("test-continue");
-	const result5 = await wf5.run("test-continue", { location: "forest-west" });
+	const runId5 = `test-continue-${runSuffix}`;
+	const wf5 = client.continueOnErrorCoordinator.getOrCreate(runId5);
+	await wf5.run(runId5, { location: "forest-west" });
+	const result5 = await waitForTerminal(wf5);
 
 	console.log("\nResult:", JSON.stringify(result5, null, 2));
 
@@ -277,8 +321,10 @@ async function main() {
 	// Test 6: Continue on Error (last step)
 	console.log("--- TEST 6: Continue on Error (last step) ---\n");
 
-	const wf6 = client.continueOnErrorLastCoordinator.getOrCreate("test-continue-last");
-	const result6 = await wf6.run("test-continue-last", { location: "forest-center" });
+	const runId6 = `test-continue-last-${runSuffix}`;
+	const wf6 = client.continueOnErrorLastCoordinator.getOrCreate(runId6);
+	await wf6.run(runId6, { location: "forest-center" });
+	const result6 = await waitForTerminal(wf6);
 
 	console.log("\nResult:", JSON.stringify(result6, null, 2));
 

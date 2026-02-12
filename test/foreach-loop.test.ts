@@ -53,6 +53,17 @@ function assert(condition: boolean, message: string) {
 	}
 }
 
+async function runToTerminal(
+	engine: ReturnType<typeof rival>,
+	workflowName: string,
+	input?: unknown,
+	runId?: string,
+) {
+	const start = await engine.run(workflowName, input, runId);
+	assert(!!start.runId, "run() returns runId");
+	return engine.wait(workflowName, start.runId);
+}
+
 // =============================================================================
 // STEP FUNCTIONS
 // =============================================================================
@@ -357,7 +368,7 @@ async function testSequentialExecution() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("seqForEach", { items: [1, 2, 3] });
+	const result = await runToTerminal(engine, "seqForEach", { items: [1, 2, 3] });
 
 	assert(result.status === "completed", "workflow completed");
 
@@ -398,7 +409,7 @@ async function testParallelExecution() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("parForEach", { items: [10, 20, 30] });
+	const result = await runToTerminal(engine, "parForEach", { items: [10, 20, 30] });
 
 	assert(result.status === "completed", "workflow completed");
 
@@ -446,7 +457,7 @@ async function testLoopContext() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("ctxCheck", { items: ["a", "b"] });
+	const result = await runToTerminal(engine, "ctxCheck", { items: ["a", "b"] });
 
 	assert(result.status === "completed", "workflow completed");
 
@@ -484,7 +495,7 @@ async function testBodyStepVisibility() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("bodyVisTest", {
+	const result = await runToTerminal(engine, "bodyVisTest", {
 		items: [
 			{ name: "Widget", price: 9.99 },
 			{ name: "Gadget", price: 19.99 },
@@ -525,7 +536,7 @@ async function testBeforeAfterLoop() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("beforeAfter", {
+	const result = await runToTerminal(engine, "beforeAfter", {
 		prefix: "test",
 		items: [1, 2, 3],
 	});
@@ -568,7 +579,7 @@ async function testLastStepAfterLoop() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("lastStepCheck", { items: [1] });
+	const result = await runToTerminal(engine, "lastStepCheck", { items: [1] });
 
 	assert(result.status === "completed", "workflow completed");
 
@@ -595,7 +606,7 @@ async function testHardFailureStopsLoop() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("hardFail", {
+	const result = await runToTerminal(engine, "hardFail", {
 		items: [{ value: 1 }, { shouldFail: true }, { value: 3 }],
 	});
 
@@ -628,7 +639,7 @@ async function testStepsAfterFailedLoopSkipped() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("afterFail", {
+	const result = await runToTerminal(engine, "afterFail", {
 		items: [{ shouldFail: true }],
 	});
 
@@ -652,7 +663,7 @@ async function testContinueOnError() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("softFail", {
+	const result = await runToTerminal(engine, "softFail", {
 		items: [{ value: 1 }, { shouldFail: true }, { value: 3 }],
 	});
 
@@ -689,7 +700,7 @@ async function testParallelHardFailureFailsWorkflow() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("parHardFail", {
+	const result = await runToTerminal(engine, "parHardFail", {
 		items: [{ value: 1 }, { shouldFail: true }, { value: 3 }],
 	});
 
@@ -730,7 +741,7 @@ async function testParallelContinueOnError() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("parSoftFail", {
+	const result = await runToTerminal(engine, "parSoftFail", {
 		items: [{ value: 1 }, { shouldFail: true }, { value: 3 }],
 	});
 
@@ -775,7 +786,7 @@ async function testNestedForEachRecursion() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedLoops", {
+	const result = await runToTerminal(engine, "nestedLoops", {
 		groups: [{ numbers: [2, 3] }, { numbers: [4] }],
 	});
 
@@ -839,7 +850,7 @@ async function testNestedForEachOuterParallel() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedOuterParallel", {
+	const result = await runToTerminal(engine, "nestedOuterParallel", {
 		groups: [{ numbers: [2, 3] }, { numbers: [4] }],
 	});
 
@@ -904,7 +915,7 @@ async function testNestedForEachInnerParallel() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedInnerParallel", {
+	const result = await runToTerminal(engine, "nestedInnerParallel", {
 		groups: [{ numbers: [2, 3] }, { numbers: [4] }],
 	});
 
@@ -967,7 +978,7 @@ async function testNestedForEachInnerHardFailureSequentialOuter() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedHardFailSeqOuter", {
+	const result = await runToTerminal(engine, "nestedHardFailSeqOuter", {
 		groups: [{ numbers: [2, 3] }, { numbers: [4] }],
 	});
 
@@ -1030,7 +1041,7 @@ async function testNestedForEachInnerHardFailureParallelOuter() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedHardFailParOuter", {
+	const result = await runToTerminal(engine, "nestedHardFailParOuter", {
 		groups: [{ numbers: [2, 3] }, { numbers: [4] }],
 	});
 
@@ -1083,7 +1094,7 @@ async function testNestedForEachInnerContinueOnError() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedSoftFail", {
+	const result = await runToTerminal(engine, "nestedSoftFail", {
 		groups: [{ numbers: [2, 3] }, { numbers: [4] }],
 	});
 
@@ -1140,7 +1151,7 @@ async function testRetrySequentialForEach() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("retrySeqLoop", {
+	const result = await runToTerminal(engine, "retrySeqLoop", {
 		items: [{ id: "a" }, { id: "b" }],
 	});
 
@@ -1182,7 +1193,7 @@ async function testRetryParallelForEach() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("retryParLoop", {
+	const result = await runToTerminal(engine, "retryParLoop", {
 		items: [{ id: "p1" }, { id: "p2" }, { id: "p3" }],
 	});
 
@@ -1234,7 +1245,7 @@ async function testNestedForEachRetrySuccess() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedRetrySuccess", {
+	const result = await runToTerminal(engine, "nestedRetrySuccess", {
 		groups: [{ retryItems: [{ id: "g1-i1" }, { id: "g1-i2" }] }, { retryItems: [{ id: "g2-i1" }] }],
 	});
 
@@ -1301,7 +1312,7 @@ async function testNestedForEachRetryExhaustionFails() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("nestedRetryExhausted", {
+	const result = await runToTerminal(engine, "nestedRetryExhausted", {
 		groups: [{ retryItems: [{ id: "exhausted", failUntil: 3 }] }],
 	});
 
@@ -1324,7 +1335,7 @@ async function testEmptyItems() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("emptyLoop", { items: [] });
+	const result = await runToTerminal(engine, "emptyLoop", { items: [] });
 
 	assert(result.status === "completed", "workflow completed");
 
@@ -1355,7 +1366,7 @@ async function testViaEngine() {
 
 	assert(engine.list().includes("engineLoop"), "engine has workflow");
 
-	const result = await engine.run("engineLoop", { items: [5, 10] });
+	const result = await runToTerminal(engine, "engineLoop", { items: [5, 10] });
 	assert(result.status === "completed", "workflow completed via engine");
 
 	const iterations = (
@@ -1382,7 +1393,7 @@ async function testNonArrayIterator() {
 		.build();
 
 	const engine = rival(workflow);
-	const result = await engine.run("badIterator", {});
+	const result = await runToTerminal(engine, "badIterator", {});
 
 	assert(result.status === "failed", "workflow failed");
 	assert(result.error !== undefined, "error present");
@@ -1443,7 +1454,7 @@ async function testIteratorNameNoCollision() {
 
 	// Should also work at runtime
 	const engine = rival(workflow);
-	const result = await engine.run("iterCollision", { items: [42] });
+	const result = await runToTerminal(engine, "iterCollision", { items: [42] });
 	assert(result.status === "completed", "workflow with 'iterator' do step runs");
 
 	const iterations = (
