@@ -52,6 +52,8 @@ export interface ForEachInput {
 	do: StepFunction | WorkflowDefinition;
 	/** Run iterations in parallel (fan-out/fan-in) */
 	parallel?: boolean;
+	/** Max in-flight iterations when parallel is true */
+	concurrency?: number;
 }
 
 /**
@@ -133,6 +135,19 @@ export class WorkflowBuilder {
 	 * @param config - Loop configuration (items, do, parallel)
 	 */
 	forEach(name: string, config: ForEachInput): this {
+		if (config.concurrency !== undefined) {
+			if (!Number.isInteger(config.concurrency) || config.concurrency < 1) {
+				throw new Error(
+					`Workflow "${this._name}" loop "${name}" has invalid concurrency ${String(config.concurrency)}. concurrency must be an integer >= 1.`,
+				);
+			}
+			if (!config.parallel) {
+				throw new Error(
+					`Workflow "${this._name}" loop "${name}" sets concurrency but parallel is not true.`,
+				);
+			}
+		}
+
 		this._assertUniqueStepName(name);
 		this._steps.push({
 			type: "forEach",
@@ -140,6 +155,7 @@ export class WorkflowBuilder {
 			items: config.items,
 			do: config.do,
 			parallel: config.parallel,
+			concurrency: config.concurrency,
 		});
 		return this;
 	}

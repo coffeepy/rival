@@ -45,10 +45,14 @@ export interface LoopPlanNode {
 	name: string;
 	/** Actor ref for the iterator function (returns an array) */
 	iteratorActorRef: string;
+	/** Actor ref for the loop coordinator actor */
+	loopCoordinatorActorRef: string;
 	/** Nodes to execute each iteration */
 	do: PlanNode[];
 	/** Run iterations in parallel (fan-out/fan-in) */
 	parallel?: boolean;
+	/** Max in-flight iterations when parallel is true */
+	concurrency?: number;
 }
 
 /**
@@ -109,8 +113,10 @@ const planNodeSchema = z.discriminatedUnion("type", [
 		type: z.literal("loop"),
 		name: z.string().min(1),
 		iteratorActorRef: z.string().min(1),
+		loopCoordinatorActorRef: z.string().min(1),
 		do: z.array(z.any()),
 		parallel: z.boolean().optional(),
+		concurrency: z.number().int().min(1).optional(),
 	}),
 	z.object({
 		type: z.literal("parallel"),

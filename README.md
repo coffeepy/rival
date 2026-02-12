@@ -26,7 +26,8 @@ const workflow = createWorkflow("onboarding")
   .build();
 
 const engine = rival(workflow);
-const result = await engine.run("onboarding", { userId: "u-123" });
+const { runId } = await engine.run("onboarding", { userId: "u-123" });
+const result = await engine.wait("onboarding", runId);
 console.log(result.status); // "completed"
 ```
 
@@ -35,11 +36,17 @@ console.log(result.status); // "completed"
 Rival transforms your step functions into RivetKit actors at registration time. Each step becomes a stateful actor with its own execution state, retry logic, and logging. A coordinator actor orchestrates them sequentially according to the workflow plan.
 
 ```
-Your functions  -->  rival()  -->  RivetKit actors  -->  engine.run()
-                     compiles       with persistence      executes
+Your functions  -->  rival()  -->  RivetKit actors  -->  engine.run() + engine.wait()
+                     compiles       with persistence      start + await terminal state
 ```
 
 ## API
+
+For a whole-system map of the app (builder, compiler, runtime, tests, and current known limitations), see:
+`docs/app-overview.md`.
+
+For a developer-oriented runtime walkthrough (current architecture, callback vs blocking paths, cancel semantics, and where to read code), see:
+`docs/runtime-current-state.md`.
 
 ### `rival(...workflows)`
 
@@ -48,10 +55,14 @@ Top-level entry point. Accepts workflow definitions or pre-compiled workflows. R
 ```typescript
 const engine = rival(workflow1, workflow2);
 
-await engine.run("workflow1", { key: "value" });   // run by name
+const { runId } = await engine.run("workflow1", { key: "value" }); // start by name
+await engine.wait("workflow1", runId);                              // wait for terminal
 engine.list();                                      // list workflow names
 engine.get("workflow1");                            // get coordinator handle
 ```
+
+`wait()` uses an event-first strategy and falls back to polling automatically.
+You can tune behavior with `timeoutMs`, `pollIntervalMs`, `preferEvents`, and `eventWaitTimeoutMs`.
 
 ### `createWorkflow(name)`
 

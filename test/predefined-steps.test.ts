@@ -8,7 +8,7 @@
  * Run with: bun test/predefined-steps.test.ts
  */
 
-import { setup } from "rivetkit";
+import { createFileSystemDriver, setup } from "rivetkit";
 import {
 	type StepContext,
 	compileWorkflow,
@@ -16,6 +16,7 @@ import {
 	delayStep,
 	httpStep,
 } from "../src/rival";
+import { waitForTerminal } from "./helpers/wait-for-terminal";
 
 // =============================================================================
 // TEST: DELAY STEP
@@ -284,6 +285,9 @@ async function testWorkflowIntegration() {
 		});
 
 		const { client } = registry.start({
+			driver: createFileSystemDriver({
+				path: `/tmp/rival-test-predefined-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+			}),
 			disableDefaultServer: true,
 			noWelcome: true,
 		});
@@ -294,11 +298,19 @@ async function testWorkflowIntegration() {
 					id: string,
 					input: unknown,
 				) => Promise<{ status: string; results?: Record<string, unknown> }>;
+				getState: () => Promise<{
+					status: string;
+					stepResults: Record<string, unknown>;
+					error: string | null;
+				}>;
 			};
 		};
 
 		console.log("\nRunning workflow...");
-		const result = await coordinator.getOrCreate("test-api-1").run("test-api-1", {});
+		const runId = `test-api-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+		const instance = coordinator.getOrCreate(runId);
+		await instance.run(runId, {});
+		const result = await waitForTerminal(instance);
 
 		console.log(`\nResult: ${result.status}`);
 
