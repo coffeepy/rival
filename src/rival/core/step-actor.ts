@@ -14,20 +14,56 @@ import { StepError } from "../types";
  * Step actor state.
  */
 export interface StepActorState {
-	status: "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
+	status:
+		| "pending"
+		| "running"
+		| "waiting_retry"
+		| "completed"
+		| "failed"
+		| "skipped"
+		| "cancelled";
 	result: unknown;
 	error: string | null;
 	attempts: number;
 	stepState: StepState;
+	continueOnError: boolean;
 	logs: LogEntry[];
 	startedAt: number | null;
 	completedAt: number | null;
+	context: ExecuteContext | null;
+	config: StepConfig | null;
+	workflowId: string | null;
+	activeStepName: string | null;
+	coordinatorRef: string | null;
+	coordinatorKey: string | null;
+	executionToken: number;
+	timeoutToken: number | null;
 }
 
 /**
  * Result returned from step execution.
  */
 export interface StepExecutionResult {
+	status: "running" | "completed" | "failed" | "skipped";
+	result?: unknown;
+	error?: string;
+	stepState: StepState;
+	/** When true, a failed step should not stop the workflow */
+	continueOnError?: boolean;
+}
+
+/**
+ * Result returned from execute kickoff.
+ */
+export interface StepExecutionKickoffResult {
+	status: "running";
+	stepState: StepState;
+}
+
+/**
+ * Result returned from terminal state lookup.
+ */
+export interface StepExecutionTerminalResult {
 	status: "completed" | "failed" | "skipped";
 	result?: unknown;
 	error?: string;
@@ -54,6 +90,98 @@ export type ExecuteContext = Omit<StepContext, "log" | "state">;
 export function createStepActor<TInput = unknown, TResult = unknown>(
 	stepFn: StepFunction<TInput, TResult>,
 ) {
+	function createLogger(c: { state: StepActorState }) {
+		const workflowId = c.state.workflowId ?? "unknown";
+		const stepName = c.state.activeStepName ?? "unknown";
+		return createStepLogger({ workflowId, stepName }, c.state.logs, true);
+	}
+
+	async function notifyCoordinator(c: {
+		state: StepActorState;
+		client: () => Record<string, unknown>;
+	}) {
+		const coordinatorRef = c.state.coordinatorRef;
+		const coordinatorKey = c.state.coordinatorKey;
+		if (!coordinatorRef || !coordinatorKey) return;
+
+		const coordinatorType = c.client()[coordinatorRef] as
+			| {
+					getOrCreate: (key: string) => { onStepFinished?: (...args: unknown[]) => Promise<void> };
+			  }
+			| undefined;
+		const callback = coordinatorType?.getOrCreate(coordinatorKey).onStepFinished;
+		if (!callback) return;
+
+		await callback(
+			c.state.activeStepName,
+			c.state.status,
+			c.state.result,
+			c.state.error,
+			c.state.stepState,
+			c.state.continueOnError,
+		);
+	}
+
+	function toTerminalResult(c: { state: StepActorState }): StepExecutionTerminalResult {
+		const status = c.state.status === "cancelled" ? "failed" : c.state.status;
+		return {
+			status:
+				status === "completed" || status === "failed" || status === "skipped" ? status : "failed",
+			result: c.state.result,
+			error: c.state.error ?? undefined,
+			stepState: c.state.stepState,
+			continueOnError: c.state.continueOnError || undefined,
+		};
+	}
+
+	async function finalize(
+		c: { state: StepActorState; client: () => Record<string, unknown> },
+		next: {
+			status: StepActorState["status"];
+			result?: unknown;
+			error?: string | null;
+			continueOnError?: boolean;
+		},
+	) {
+		c.state.status = next.status;
+		c.state.result = next.result ?? null;
+		c.state.error = next.error ?? null;
+		c.state.continueOnError = next.continueOnError ?? false;
+		c.state.completedAt = Date.now();
+		c.state.timeoutToken = null;
+		await notifyCoordinator(c);
+	}
+
+	async function invokeStepOnError(
+		c: { state: StepActorState },
+		error: Error,
+		context: ExecuteContext,
+		config: StepConfig,
+	) {
+		if (!config.onError) return;
+		try {
+			await config.onError({
+				error,
+				failedStep: {
+					result: c.state.result,
+					state: c.state.stepState,
+					stepName: c.state.activeStepName ?? "unknown",
+					status: c.state.status,
+				},
+				workflowState: {
+					input: context.input,
+					steps: context.steps ?? {},
+					status: "failed",
+					runId: c.state.workflowId ?? "unknown",
+					workflowName: c.state.workflowId ?? "unknown",
+				},
+			});
+		} catch {
+			const log = createLogger(c);
+			log.error("Step onError handler failed");
+		}
+	}
+
 	return actor({
 		state: {
 			status: "pending" as StepActorState["status"],
@@ -61,14 +189,23 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 			error: null as string | null,
 			attempts: 0,
 			stepState: {} as StepState,
+			continueOnError: false,
 			logs: [] as LogEntry[],
 			startedAt: null as number | null,
 			completedAt: null as number | null,
+			context: null as ExecuteContext | null,
+			config: null as StepConfig | null,
+			workflowId: null as string | null,
+			activeStepName: null as string | null,
+			coordinatorRef: null as string | null,
+			coordinatorKey: null as string | null,
+			executionToken: 0,
+			timeoutToken: null as number | null,
 		},
 
 		actions: {
 			/**
-			 * Execute the step function with retry logic.
+			 * Kick off asynchronous execution.
 			 */
 			execute: async (
 				c,
@@ -76,109 +213,179 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				config?: StepConfig,
 				workflowId?: string,
 				stepName?: string,
-			): Promise<StepExecutionResult> => {
-				const maxAttempts = config?.maxAttempts ?? 1;
-				const wfId = workflowId ?? "unknown";
-				const name = stepName ?? "unknown";
+				coordinatorRef?: string,
+				coordinatorKey?: string,
+			): Promise<StepExecutionKickoffResult> => {
+				const token = Date.now() + Math.floor(Math.random() * 1000000);
 
-				// Create logger that stores logs in actor state
-				const log = createStepLogger({ workflowId: wfId, stepName: name }, c.state.logs, true);
+				c.state.status = "running";
+				c.state.result = null;
+				c.state.error = null;
+				c.state.attempts = 0;
+				c.state.stepState = {};
+				c.state.continueOnError = false;
+				c.state.startedAt = Date.now();
+				c.state.completedAt = null;
+				c.state.context = context;
+				c.state.config = config ?? {};
+				c.state.workflowId = workflowId ?? "unknown";
+				c.state.activeStepName = stepName ?? "unknown";
+				c.state.coordinatorRef = coordinatorRef ?? null;
+				c.state.coordinatorKey = coordinatorKey ?? null;
+				c.state.executionToken = token;
+				c.state.timeoutToken = null;
 
-				// Create mutable step state
-				const stepState: StepState = {};
+				const log = createLogger(c);
+				log.info("Step scheduled for execution");
 
-				for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-					c.state.attempts = attempt;
-					c.state.status = "running";
-					c.state.startedAt = c.state.startedAt ?? Date.now();
+				if ((config?.timeout ?? 0) > 0) {
+					c.state.timeoutToken = token;
+					const timeoutMs = config?.timeout ?? 0;
+					await c.schedule.after(timeoutMs, "_onTimeout", token);
+				}
 
-					try {
-						log.info(`Executing (attempt ${attempt}/${maxAttempts})`);
+				await c.schedule.after(0, "_attempt", token);
+				return { status: "running", stepState: c.state.stepState };
+			},
 
-						// Build full context with log and state
-						const fullContext: StepContext<TInput> = {
-							...(context as Omit<StepContext<TInput>, "log" | "state">),
-							log,
-							state: stepState,
-						};
+			_attempt: async (c, token: number): Promise<void> => {
+				if (c.state.executionToken !== token) return;
+				if (
+					c.state.status === "completed" ||
+					c.state.status === "failed" ||
+					c.state.status === "skipped" ||
+					c.state.status === "cancelled"
+				) {
+					return;
+				}
 
-						// Execute the baked-in function
-						const result = await stepFn(fullContext);
+				const context = c.state.context;
+				const config = c.state.config ?? {};
+				if (!context) return;
 
-						// Check if step was skipped
-						if (stepState.skipped) {
-							c.state.status = "skipped";
-							c.state.stepState = stepState;
-							c.state.completedAt = Date.now();
-							log.info("Step skipped");
-							return { status: "skipped", stepState };
-						}
+				const log = createLogger(c);
+				const maxAttempts = config.maxAttempts ?? 1;
+				c.state.status = "running";
+				c.state.attempts += 1;
+				const attempt = c.state.attempts;
 
-						// Success
-						c.state.status = "completed";
-						c.state.result = result;
-						c.state.stepState = stepState;
-						c.state.completedAt = Date.now();
-						log.info("Completed successfully");
+				try {
+					log.info(`Executing (attempt ${attempt}/${maxAttempts})`);
+					const fullContext: StepContext<TInput> = {
+						...(context as Omit<StepContext<TInput>, "log" | "state">),
+						log,
+						state: c.state.stepState,
+					};
+					const result = await stepFn(fullContext);
 
-						return { status: "completed", result, stepState };
-					} catch (err) {
-						const error = err instanceof Error ? err : new Error(String(err));
-						const errorMsg = error.message;
+					if (c.state.stepState.skipped) {
+						log.info("Step skipped");
+						await finalize(c, {
+							status: "skipped",
+						});
+						return;
+					}
 
-						log.error(`Failed: ${errorMsg}`);
+					log.info("Completed successfully");
+					await finalize(c, {
+						status: "completed",
+						result,
+					});
+					return;
+				} catch (err) {
+					const error = err instanceof Error ? err : new Error(String(err));
+					const errorMsg = error.message;
+					log.error(`Failed: ${errorMsg}`);
 
-						// Handle StepError specially
-						if (err instanceof StepError) {
-							if (err.behavior === "continue") {
-								// Log and continue - step is marked as failed but workflow continues
-								c.state.status = "failed";
-								c.state.error = errorMsg;
-								c.state.stepState = stepState;
-								c.state.completedAt = Date.now();
-								return { status: "failed", error: errorMsg, stepState, continueOnError: true };
-							}
+					if (err instanceof StepError && err.behavior === "continue") {
+						await finalize(c, {
+							status: "failed",
+							error: errorMsg,
+							continueOnError: true,
+						});
+						await invokeStepOnError(c, error, context, config);
+						return;
+					}
 
-							if (err.behavior === "retry") {
-								const retryMax = err.maxAttempts ?? maxAttempts;
-								if (attempt < retryMax) {
-									const delay = calculateBackoff(attempt, err.backoff ?? config?.backoff);
-									log.info(`Retrying in ${delay}ms...`);
-									await sleep(delay);
-									continue;
-								}
-							}
+					const retryLimit =
+						err instanceof StepError && err.behavior === "retry"
+							? Math.min(err.maxAttempts ?? maxAttempts, maxAttempts)
+							: maxAttempts;
 
-							// behavior === 'stop' or exhausted retries
-							c.state.status = "failed";
-							c.state.error = errorMsg;
-							c.state.stepState = stepState;
-							c.state.completedAt = Date.now();
-							return { status: "failed", error: errorMsg, stepState };
-						}
+					if (
+						((err instanceof StepError && err.behavior === "retry") ||
+							!(err instanceof StepError)) &&
+						attempt < retryLimit
+					) {
+						const backoff =
+							err instanceof StepError && err.behavior === "retry"
+								? (err.backoff ?? config.backoff)
+								: config.backoff;
+						const delay = calculateBackoff(attempt, backoff);
+						c.state.status = "waiting_retry";
+						await c.saveState({ immediate: true });
+						log.info(`Retrying in ${delay}ms...`);
+						await c.schedule.after(delay, "_attempt", token);
+						return;
+					}
 
-						// Regular error - check if we should retry based on config
-						if (attempt < maxAttempts) {
-							const delay = calculateBackoff(attempt, config?.backoff);
-							log.info(`Retrying in ${delay}ms...`);
-							await sleep(delay);
-							continue;
-						}
+					await finalize(c, {
+						status: "failed",
+						error: errorMsg,
+					});
+					await invokeStepOnError(c, error, context, config);
+				}
+			},
 
-						// Exhausted retries
-						c.state.status = "failed";
-						c.state.error = errorMsg;
-						c.state.stepState = stepState;
-						c.state.completedAt = Date.now();
-						return { status: "failed", error: errorMsg, stepState };
+			_onTimeout: async (c, token: number): Promise<void> => {
+				if (c.state.timeoutToken !== token || c.state.executionToken !== token) return;
+				if (
+					c.state.status === "completed" ||
+					c.state.status === "failed" ||
+					c.state.status === "skipped" ||
+					c.state.status === "cancelled"
+				) {
+					return;
+				}
+
+				const context = c.state.context;
+				const config = c.state.config ?? {};
+				if (!context) return;
+
+				const log = createLogger(c);
+				const timeoutMsg = `Step timed out after ${config.timeout ?? 0}ms`;
+				log.error(timeoutMsg);
+
+				if (config.onTimeout === "retry") {
+					const maxAttempts = config.maxAttempts ?? 1;
+					if (c.state.attempts < maxAttempts) {
+						const delay = calculateBackoff(Math.max(c.state.attempts, 1), config.backoff);
+						c.state.status = "waiting_retry";
+						await c.saveState({ immediate: true });
+						log.info(`Retrying after timeout in ${delay}ms...`);
+						await c.schedule.after(delay, "_attempt", token);
+						return;
 					}
 				}
 
-				// Should never reach here
-				c.state.status = "failed";
-				c.state.error = "Unknown error";
-				c.state.completedAt = Date.now();
-				return { status: "failed", error: "Unknown error", stepState };
+				const error = new Error(timeoutMsg);
+				await finalize(c, {
+					status: "failed",
+					error: timeoutMsg,
+				});
+				await invokeStepOnError(c, error, context, config);
+			},
+
+			getTerminalResult: (c): StepExecutionTerminalResult | null => {
+				if (
+					c.state.status !== "completed" &&
+					c.state.status !== "failed" &&
+					c.state.status !== "skipped" &&
+					c.state.status !== "cancelled"
+				) {
+					return null;
+				}
+				return toTerminalResult(c);
 			},
 
 			/**
@@ -190,9 +397,18 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				error: c.state.error,
 				attempts: c.state.attempts,
 				stepState: c.state.stepState,
+				continueOnError: c.state.continueOnError,
 				logs: c.state.logs,
 				startedAt: c.state.startedAt,
 				completedAt: c.state.completedAt,
+				context: c.state.context,
+				config: c.state.config,
+				workflowId: c.state.workflowId,
+				activeStepName: c.state.activeStepName,
+				coordinatorRef: c.state.coordinatorRef,
+				coordinatorKey: c.state.coordinatorKey,
+				executionToken: c.state.executionToken,
+				timeoutToken: c.state.timeoutToken,
 				duration:
 					c.state.completedAt && c.state.startedAt ? c.state.completedAt - c.state.startedAt : null,
 			}),
@@ -201,9 +417,15 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 			 * Cancel the step (marks as cancelled, cannot stop in-flight work).
 			 */
 			cancel: (c) => {
-				if (c.state.status === "running" || c.state.status === "pending") {
+				if (
+					c.state.status === "running" ||
+					c.state.status === "pending" ||
+					c.state.status === "waiting_retry"
+				) {
 					c.state.status = "cancelled";
 					c.state.completedAt = Date.now();
+					c.state.executionToken += 1;
+					c.state.timeoutToken = null;
 				}
 			},
 		},
@@ -222,11 +444,4 @@ function calculateBackoff(attempt: number, strategy?: "linear" | "exponential"):
 
 	// Linear (default)
 	return baseDelay * attempt; // 100, 200, 300, 400...
-}
-
-/**
- * Sleep for a given number of milliseconds.
- */
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }

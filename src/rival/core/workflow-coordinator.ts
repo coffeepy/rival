@@ -10,7 +10,12 @@ import type { ZodSchema } from "zod";
 import type { LoopContext, LoopPlanNode, PlanNode, StepPlanNode, StepResult } from "../types";
 import { planSchema } from "../types";
 import { buildStepContext } from "./context-builder";
-import type { ExecuteContext, StepExecutionResult } from "./step-actor";
+import type {
+	ExecuteContext,
+	StepExecutionKickoffResult,
+	StepExecutionResult,
+	StepExecutionTerminalResult,
+} from "./step-actor";
 
 /**
  * Workflow coordinator state.
@@ -47,7 +52,10 @@ type StepActorHandle = {
 			config?: unknown,
 			wfId?: string,
 			stepName?: string,
-		) => Promise<StepExecutionResult>;
+			coordinatorRef?: string,
+			coordinatorKey?: string,
+		) => Promise<StepExecutionKickoffResult>;
+		getTerminalResult: () => Promise<StepExecutionTerminalResult | null>;
 	};
 };
 
@@ -136,7 +144,16 @@ export function createWorkflowCoordinator(
 			loopContext,
 		});
 
-		const execResult = await stepActor.execute(context, node.config, workflowId, node.name);
+		await stepActor.execute(
+			context,
+			node.config,
+			workflowId,
+			node.name,
+			`${workflowName}_coordinator`,
+			workflowId,
+		);
+
+		const execResult = await waitForStepTerminal(stepActor);
 
 		if (execResult.status === "failed" && !execResult.continueOnError) {
 			return { ok: false, error: execResult.error ?? "Step failed" };
@@ -154,6 +171,16 @@ export function createWorkflowCoordinator(
 			state: stepResult.stepState,
 			status,
 		};
+	}
+
+	async function waitForStepTerminal(
+		stepActor: ReturnType<StepActorHandle["getOrCreate"]>,
+	): Promise<StepExecutionTerminalResult> {
+		for (;;) {
+			const terminal = await stepActor.getTerminalResult();
+			if (terminal) return terminal;
+			await sleep(25);
+		}
 	}
 
 	/**
@@ -284,12 +311,8 @@ export function createWorkflowCoordinator(
 			stepResults: parentStepResults,
 			loopContext: parentLoopContext,
 		});
-		const iteratorResult = await iteratorActor.execute(
-			iteratorContext,
-			undefined,
-			workflowId,
-			`${loopName}:iterator`,
-		);
+		await iteratorActor.execute(iteratorContext, undefined, workflowId, `${loopName}:iterator`);
+		const iteratorResult = await waitForStepTerminal(iteratorActor);
 
 		if (iteratorResult.status === "failed") {
 			return { ok: false, error: iteratorResult.error ?? "Iterator failed" };
@@ -635,4 +658,8 @@ export function createWorkflowCoordinator(
 			},
 		},
 	});
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
