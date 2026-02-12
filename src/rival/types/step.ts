@@ -120,4 +120,6 @@ export interface ForEachDefinition {
 	do: StepFunction | WorkflowDefinition;
 	/** Run iterations in parallel (fan-out/fan-in) */
 	parallel?: boolean;
+	/** Max in-flight iterations when running in parallel mode */
+	concurrency?: number;
 }

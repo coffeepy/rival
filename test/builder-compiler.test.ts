@@ -10,9 +10,10 @@
  * Run with: bun test/builder-compiler.test.ts
  */
 
-import { setup } from "rivetkit";
+import { createFileSystemDriver, setup } from "rivetkit";
 import { z } from "zod";
 import { type StepContext, compileWorkflow, createWorkflow, defineWorkflow } from "../src/rival";
+import { waitForTerminal } from "./helpers/wait-for-terminal";
 
 // =============================================================================
 // STEP FUNCTIONS
@@ -193,6 +194,9 @@ async function testExecution() {
 	});
 
 	const { client } = registry.start({
+		driver: createFileSystemDriver({
+			path: `/tmp/rival-test-builder-compiler-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+		}),
 		disableDefaultServer: true,
 		noWelcome: true,
 	});
@@ -204,14 +208,21 @@ async function testExecution() {
 				id: string,
 				input: unknown,
 			) => Promise<{ status: string; results?: Record<string, unknown> }>;
+			getState: () => Promise<{
+				status: string;
+				stepResults: Record<string, unknown>;
+				error: string | null;
+			}>;
 		};
 	};
 
-	const instance = coordinator.getOrCreate("test-order-1");
-	const result = await instance.run("test-order-1", {
+	const runId = `test-order-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const instance = coordinator.getOrCreate(runId);
+	await instance.run(runId, {
 		orderId: "ORD-123",
 		amount: 99.99,
 	});
+	const result = await waitForTerminal(instance);
 
 	console.log("Execution result:");
 	console.log(JSON.stringify(result, null, 2));

@@ -17,6 +17,7 @@
  * ```
  */
 
+import { createForLoopCoordinator } from "../core/for-loop-coordinator";
 import { createStepActor } from "../core/step-actor";
 import { createWorkflowCoordinator } from "../core/workflow-coordinator";
 import type {
@@ -63,7 +64,7 @@ function isWorkflowDefinition(
  * @returns A compiled workflow ready for registration
  */
 export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflow {
-	const { name, steps, inputSchema, description } = definition;
+	const { name, steps, inputSchema, onError, description } = definition;
 
 	// Build actors and plan nodes
 	const actors: Record<string, unknown> = {};
@@ -136,9 +137,23 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 
 		for (const entry of entries) {
 			if (isForEachDefinition(entry)) {
+				if (entry.concurrency !== undefined) {
+					if (!Number.isInteger(entry.concurrency) || entry.concurrency < 1) {
+						throw new Error(
+							`Workflow "${name}" loop "${entry.name}" has invalid concurrency ${String(entry.concurrency)}. concurrency must be an integer >= 1.`,
+						);
+					}
+					if (!entry.parallel) {
+						throw new Error(
+							`Workflow "${name}" loop "${entry.name}" sets concurrency but parallel is not true.`,
+						);
+					}
+				}
+
 				const loopName = entry.name;
 				const loopNamespace = [...namespace, "loop", loopName];
 				const iteratorActorRef = prefixedRef([...loopNamespace, "iterator"]);
+				const loopCoordinatorActorRef = prefixedRef([...loopNamespace, "coordinator"]);
 				registerActor(iteratorActorRef, createStepActor(entry.items));
 
 				const doEntries: (StepDefinition | ForEachDefinition)[] = isWorkflowDefinition(entry.do)
@@ -154,9 +169,12 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 					type: "loop",
 					name: loopName,
 					iteratorActorRef,
+					loopCoordinatorActorRef,
 					do: doPlan,
 					parallel: entry.parallel,
+					concurrency: entry.concurrency,
 				};
+				registerActor(loopCoordinatorActorRef, createForLoopCoordinator(name, loopNode));
 				compiled.push(loopNode);
 				continue;
 			}
@@ -182,7 +200,7 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 
 	// Create the coordinator actor
 	const coordinatorActorRef = `${name}_coordinator`;
-	actors[coordinatorActorRef] = createWorkflowCoordinator(name, plan, inputSchema);
+	actors[coordinatorActorRef] = createWorkflowCoordinator(name, plan, inputSchema, onError);
 
 	return {
 		name,

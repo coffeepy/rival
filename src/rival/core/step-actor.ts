@@ -43,6 +43,7 @@ export interface StepActorState {
 	activeStepName: string | null;
 	coordinatorRef: string | null;
 	coordinatorKey: string | null;
+	coordinatorToken: number | null;
 	executionToken: number;
 	timeoutToken: number | null;
 }
@@ -110,7 +111,8 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 	}) {
 		const coordinatorRef = c.state.coordinatorRef;
 		const coordinatorKey = c.state.coordinatorKey;
-		if (!coordinatorRef || !coordinatorKey) return;
+		const coordinatorToken = c.state.coordinatorToken;
+		if (!coordinatorRef || !coordinatorKey || coordinatorToken === null) return;
 
 		const coordinatorType = c.client()[coordinatorRef] as
 			| {
@@ -127,6 +129,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 			c.state.error,
 			c.state.stepState,
 			c.state.continueOnError,
+			coordinatorToken,
 		);
 	}
 
@@ -207,6 +210,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 			activeStepName: null as string | null,
 			coordinatorRef: null as string | null,
 			coordinatorKey: null as string | null,
+			coordinatorToken: null as number | null,
 			executionToken: 0,
 			timeoutToken: null as number | null,
 		},
@@ -223,6 +227,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				stepName?: string,
 				coordinatorRef?: string,
 				coordinatorKey?: string,
+				coordinatorToken?: number,
 			): Promise<StepExecutionKickoffResult> => {
 				const token = Date.now() + Math.floor(Math.random() * 1000000);
 
@@ -240,6 +245,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				c.state.activeStepName = stepName ?? "unknown";
 				c.state.coordinatorRef = coordinatorRef ?? null;
 				c.state.coordinatorKey = coordinatorKey ?? null;
+				c.state.coordinatorToken = coordinatorToken ?? null;
 				c.state.executionToken = token;
 				c.state.timeoutToken = null;
 
@@ -415,6 +421,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				activeStepName: c.state.activeStepName,
 				coordinatorRef: c.state.coordinatorRef,
 				coordinatorKey: c.state.coordinatorKey,
+				coordinatorToken: c.state.coordinatorToken,
 				executionToken: c.state.executionToken,
 				timeoutToken: c.state.timeoutToken,
 				duration:
