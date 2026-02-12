@@ -4,7 +4,7 @@
  * Pure function to build StepContext from workflow state.
  */
 
-import type { LastStepInfo, StepContext, StepResult, StepState } from "../types";
+import type { LastStepInfo, LoopContext, StepContext, StepResult, StepState } from "../types";
 
 /**
  * Workflow state needed to build step context.
@@ -12,6 +12,7 @@ import type { LastStepInfo, StepContext, StepResult, StepState } from "../types"
 export interface WorkflowState {
 	input: unknown;
 	stepResults: Record<string, StepResult>;
+	loopContext?: LoopContext;
 }
 
 /**
@@ -32,11 +33,14 @@ export function buildStepContext(workflowState: WorkflowState): Omit<StepContext
 		stepName: lastStepName,
 	};
 
-	return {
+	const ctx: Omit<StepContext, "log" | "state"> = {
 		input: workflowState.input,
 		steps: workflowState.stepResults,
 		lastStep,
+		...(workflowState.loopContext ? { loop: workflowState.loopContext } : {}),
 	};
+
+	return ctx;
 }
 
 /**

@@ -37,16 +37,18 @@ export interface BranchPlanNode {
 }
 
 /**
- * A loop node in the plan.
- * Future phase - not implemented in Phase 1.
+ * A loop node in the plan (forEach).
+ * Iterates over a collection, executing do-nodes for each item.
  */
 export interface LoopPlanNode {
 	type: "loop";
 	name: string;
-	/** Actor ref for condition evaluation */
-	conditionActorRef: string;
+	/** Actor ref for the iterator function (returns an array) */
+	iteratorActorRef: string;
 	/** Nodes to execute each iteration */
-	body: PlanNode[];
+	do: PlanNode[];
+	/** Run iterations in parallel (fan-out/fan-in) */
+	parallel?: boolean;
 }
 
 /**
@@ -106,8 +108,9 @@ const planNodeSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("loop"),
 		name: z.string().min(1),
-		conditionActorRef: z.string().min(1),
-		body: z.array(z.any()),
+		iteratorActorRef: z.string().min(1),
+		do: z.array(z.any()),
+		parallel: z.boolean().optional(),
 	}),
 	z.object({
 		type: z.literal("parallel"),
@@ -130,11 +133,11 @@ export const planSchema = z.array(planNodeSchema).superRefine((nodes, ctx) => {
 	const seen = new Set<string>();
 	for (let i = 0; i < nodes.length; i++) {
 		const node = nodes[i];
-		if (node.type === "step") {
+		if (node.type === "step" || node.type === "loop") {
 			if (seen.has(node.name)) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
-					message: `Duplicate step name "${node.name}". Step names must be unique.`,
+					message: `Duplicate step name "${node.name}". Step and loop names must be unique.`,
 					path: [i, "name"],
 				});
 			}

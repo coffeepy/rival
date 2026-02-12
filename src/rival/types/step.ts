@@ -5,6 +5,7 @@
  */
 
 import type { StepContext } from "./context";
+import type { WorkflowDefinition } from "./workflow";
 
 /**
  * A step function that can be executed by the workflow engine.
@@ -90,4 +91,21 @@ export interface StepDefinition {
 	fn: StepFunction;
 	name: string;
 	config?: StepConfig;
+}
+
+/**
+ * ForEach loop definition.
+ *
+ * `do` accepts either a StepFunction (single step body) or a WorkflowDefinition
+ * (multi-step body). The compiler detects which one and compiles accordingly.
+ */
+export interface ForEachDefinition {
+	type: "forEach";
+	name: string;
+	/** Step function that returns the items array to iterate over */
+	items: StepFunction;
+	/** Body: a single step function or a full workflow definition */
+	do: StepFunction | WorkflowDefinition;
+	/** Run iterations in parallel (fan-out/fan-in) */
+	parallel?: boolean;
 }

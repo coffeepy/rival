@@ -16,7 +16,13 @@
  */
 
 import type { ZodSchema } from "zod";
-import type { ErrorHandler, StepConfig, StepDefinition, StepFunction } from "../types";
+import type {
+	ErrorHandler,
+	ForEachDefinition,
+	StepConfig,
+	StepDefinition,
+	StepFunction,
+} from "../types";
 import type { WorkflowDefinition } from "../types";
 
 /**
@@ -35,11 +41,23 @@ export type StepInput =
 	  };
 
 /**
+ * Input for the forEach builder method.
+ */
+export interface ForEachInput {
+	/** Step function that returns the items array to iterate over */
+	items: StepFunction;
+	/** Body: a single step function or a workflow definition */
+	do: StepFunction | WorkflowDefinition;
+	/** Run iterations in parallel (fan-out/fan-in) */
+	parallel?: boolean;
+}
+
+/**
  * Workflow builder for fluent API.
  */
 export class WorkflowBuilder {
 	private readonly _name: string;
-	private _steps: StepDefinition[] = [];
+	private _steps: (StepDefinition | ForEachDefinition)[] = [];
 	private _stepNames: Set<string> = new Set();
 	private _inputSchema?: ZodSchema;
 	private _onError?: ErrorHandler;
@@ -50,6 +68,11 @@ export class WorkflowBuilder {
 	}
 
 	private _assertUniqueStepName(stepName: string): void {
+		if (stepName.includes("__")) {
+			throw new Error(
+				`Workflow "${this._name}": step/loop name "${stepName}" must not contain "__" (reserved for internal namespacing).`,
+			);
+		}
 		if (this._stepNames.has(stepName)) {
 			throw new Error(
 				`Workflow "${this._name}" already has a step named "${stepName}". Step names must be unique.`,
@@ -97,6 +120,24 @@ export class WorkflowBuilder {
 			});
 		}
 
+		return this;
+	}
+
+	/**
+	 * Add a forEach loop to the workflow.
+	 *
+	 * @param name - Unique name for this loop
+	 * @param config - Loop configuration (items, do, parallel)
+	 */
+	forEach(name: string, config: ForEachInput): this {
+		this._assertUniqueStepName(name);
+		this._steps.push({
+			type: "forEach",
+			name,
+			items: config.items,
+			do: config.do,
+			parallel: config.parallel,
+		});
 		return this;
 	}
 
