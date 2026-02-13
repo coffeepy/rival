@@ -9,7 +9,7 @@ function emptyContext(): Omit<StepContext, "log" | "state"> {
 		lastStep: {
 			result: undefined,
 			state: {},
-			stepName: null,
+			alias: null,
 		},
 	};
 }

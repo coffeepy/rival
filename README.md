@@ -72,7 +72,7 @@ Fluent builder for defining workflows.
 const workflow = createWorkflow("processOrder")
   .input(z.object({ orderId: z.string() }))   // optional Zod input validation
   .step(validateOrder)
-  .step({ fn: processPayment, timeout: 30000, maxAttempts: 3 })
+  .step({ run: processPayment, timeout: 30000, maxAttempts: 3 })
   .step(sendConfirmation)
   .build();
 ```
@@ -142,7 +142,7 @@ Steps can also be configured with retries:
 
 ```typescript
 createWorkflow("retryable")
-  .step({ fn: flakyStep, maxAttempts: 5, backoff: "exponential" })
+  .step({ run: flakyStep, maxAttempts: 5, backoff: "exponential" })
   .build();
 ```
 

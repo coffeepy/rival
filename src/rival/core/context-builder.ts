@@ -23,14 +23,14 @@ export interface WorkflowState {
  * @returns Partial context (missing log and state which are added by step actor)
  */
 export function buildStepContext(workflowState: WorkflowState): Omit<StepContext, "log" | "state"> {
-	const stepNames = Object.keys(workflowState.stepResults);
-	const lastStepName = stepNames[stepNames.length - 1] ?? null;
-	const lastStepData = lastStepName ? workflowState.stepResults[lastStepName] : null;
+	const aliases = Object.keys(workflowState.stepResults);
+	const lastAlias = aliases[aliases.length - 1] ?? null;
+	const lastStepData = lastAlias ? workflowState.stepResults[lastAlias] : null;
 
 	const lastStep: LastStepInfo = {
 		result: lastStepData?.result,
 		state: lastStepData?.state ?? {},
-		stepName: lastStepName,
+		alias: lastAlias,
 	};
 
 	const ctx: Omit<StepContext, "log" | "state"> = {

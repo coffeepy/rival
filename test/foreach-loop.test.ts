@@ -194,17 +194,14 @@ async function testBuilderSingleStep() {
 	console.log("\n--- TEST: Builder — forEach with single step function ---\n");
 
 	const workflow = createWorkflow("singleStep")
-		.forEach("processEach", {
-			items: getItems,
-			do: processItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: processItem })
 		.build();
 
 	assert(workflow.name === "singleStep", "workflow name");
 	assert(workflow.steps.length === 1, "one entry in steps");
 	const entry = workflow.steps[0];
 	assert("type" in entry && entry.type === "forEach", "entry is forEach");
-	assert(entry.name === "processEach", "forEach name");
+	assert(entry.alias === "processEach", "forEach alias");
 }
 
 // =============================================================================
@@ -217,11 +214,7 @@ async function testBuilderWorkflowDo() {
 	const orderFlow = createWorkflow("orderFlow").step(validateItem).step(chargeItem).build();
 
 	const workflow = createWorkflow("batchProcess")
-		.forEach("processAll", {
-			items: getItems,
-			do: orderFlow,
-			parallel: true,
-		})
+		.forEach({ alias: "processAll", items: getItems, run: orderFlow, parallel: true })
 		.build();
 
 	assert(workflow.name === "batchProcess", "workflow name");
@@ -240,12 +233,7 @@ async function testBuilderConcurrencyValidation() {
 
 	try {
 		createWorkflow("badConcurrencyZero")
-			.forEach("loop", {
-				items: getItems,
-				do: processItem,
-				parallel: true,
-				concurrency: 0,
-			})
+			.forEach({ alias: "loop", items: getItems, run: processItem, parallel: true, concurrency: 0 })
 			.build();
 		assert(false, "concurrency 0 should throw");
 	} catch (err) {
@@ -255,11 +243,7 @@ async function testBuilderConcurrencyValidation() {
 
 	try {
 		createWorkflow("badConcurrencyNoParallel")
-			.forEach("loop", {
-				items: getItems,
-				do: processItem,
-				concurrency: 2,
-			})
+			.forEach({ alias: "loop", items: getItems, run: processItem, concurrency: 2 })
 			.build();
 		assert(false, "concurrency without parallel should throw");
 	} catch (err) {
@@ -277,8 +261,8 @@ async function testBuilderDuplicateForEachName() {
 
 	try {
 		createWorkflow("dupLoop")
-			.forEach("loop1", { items: getItems, do: processItem })
-			.forEach("loop1", { items: getItems, do: processItem })
+			.forEach({ alias: "loop1", items: getItems, run: processItem })
+			.forEach({ alias: "loop1", items: getItems, run: processItem })
 			.build();
 		assert(false, "should have thrown");
 	} catch (err) {
@@ -300,7 +284,7 @@ async function testBuilderNameCollision() {
 			.step(function myStep() {
 				return {};
 			})
-			.forEach("myStep", { items: getItems, do: processItem })
+			.forEach({ alias: "myStep", items: getItems, run: processItem })
 			.build();
 		assert(false, "should have thrown");
 	} catch (err) {
@@ -320,15 +304,12 @@ async function testCompiler() {
 		.step(function prepare() {
 			return {};
 		})
-		.forEach("processEach", {
-			items: getItems,
-			do: processItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: processItem })
 		.build();
 
 	const compiled = compileWorkflow(workflow);
 
-	// Should have: prepare step actor, iterator actor, do actor, coordinator
+	// Should have: prepare step actor, iterator actor, run actor, coordinator
 	const actorNames = Object.keys(compiled.actors);
 	console.log(`  Actors: ${actorNames.join(", ")}`);
 
@@ -338,8 +319,8 @@ async function testCompiler() {
 		"has iterator actor with __loop__ namespace",
 	);
 	assert(
-		actorNames.includes("compilerTest__loop__processEach__do__processItem"),
-		"has do actor with __loop__do__ namespace",
+		actorNames.includes("compilerTest__loop__processEach__run__processItem"),
+		"has run actor with __loop__run__ namespace",
 	);
 	assert(actorNames.includes("compilerTest_coordinator"), "has coordinator actor");
 
@@ -350,47 +331,43 @@ async function testCompiler() {
 
 	if (compiled.plan[1].type === "loop") {
 		const loopNode = compiled.plan[1];
-		assert(loopNode.name === "processEach", "loop node name");
+		assert(loopNode.alias === "processEach", "loop node alias");
 		assert(
 			loopNode.iteratorActorRef === "compilerTest__loop__processEach__iterator",
 			"iterator actor ref",
 		);
-		assert(loopNode.do.length === 1, "loop do has 1 node");
-		assert(loopNode.do[0].type === "step", "do node is step");
+		assert(loopNode.run.length === 1, "loop run has 1 node");
+		assert(loopNode.run[0].type === "step", "run node is step");
 	}
 }
 
 // =============================================================================
-// TEST: COMPILER — workflow definition as do
+// TEST: COMPILER — workflow definition as run
 // =============================================================================
 
 async function testCompilerWorkflowDo() {
-	console.log("\n--- TEST: Compiler — workflow definition as do ---\n");
+	console.log("\n--- TEST: Compiler — workflow definition as run ---\n");
 
 	const bodyFlow = createWorkflow("bodyFlow").step(validateItem).step(chargeItem).build();
 
 	const workflow = createWorkflow("compilerWfDo")
-		.forEach("processAll", {
-			items: getItems,
-			do: bodyFlow,
-			parallel: true,
-		})
+		.forEach({ alias: "processAll", items: getItems, run: bodyFlow, parallel: true })
 		.build();
 
 	const compiled = compileWorkflow(workflow);
 	const actorNames = Object.keys(compiled.actors);
 
 	assert(
-		actorNames.includes("compilerWfDo__loop__processAll__do__validateItem"),
-		"has validateItem do actor",
+		actorNames.includes("compilerWfDo__loop__processAll__run__validateItem"),
+		"has validateItem run actor",
 	);
 	assert(
-		actorNames.includes("compilerWfDo__loop__processAll__do__chargeItem"),
-		"has chargeItem do actor",
+		actorNames.includes("compilerWfDo__loop__processAll__run__chargeItem"),
+		"has chargeItem run actor",
 	);
 
 	if (compiled.plan[0].type === "loop") {
-		assert(compiled.plan[0].do.length === 2, "loop do has 2 nodes");
+		assert(compiled.plan[0].run.length === 2, "loop run has 2 nodes");
 		assert(compiled.plan[0].parallel === true, "parallel flag");
 	}
 }
@@ -403,9 +380,10 @@ async function testCompilerLoopCoordinatorAndConcurrency() {
 	console.log("\n--- TEST: Compiler — loop coordinator ref + concurrency ---\n");
 
 	const workflow = createWorkflow("compilerConcurrency")
-		.forEach("processAll", {
+		.forEach({
+			alias: "processAll",
 			items: getItems,
-			do: processItem,
+			run: processItem,
 			parallel: true,
 			concurrency: 2,
 		})
@@ -435,10 +413,7 @@ async function testSequentialExecution() {
 	console.log("\n--- TEST: Execution — sequential forEach ---\n");
 
 	const workflow = createWorkflow("seqForEach")
-		.forEach("processEach", {
-			items: getItems,
-			do: doubleItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: doubleItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -475,11 +450,7 @@ async function testParallelExecution() {
 	console.log("\n--- TEST: Execution — parallel forEach ---\n");
 
 	const workflow = createWorkflow("parForEach")
-		.forEach("processEach", {
-			items: getItems,
-			do: doubleItem,
-			parallel: true,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: doubleItem, parallel: true })
 		.build();
 
 	const engine = rival(workflow);
@@ -524,10 +495,7 @@ async function testLoopContext() {
 	}
 
 	const workflow = createWorkflow("ctxCheck")
-		.forEach("checkLoop", {
-			items: getItems,
-			do: checkContext,
-		})
+		.forEach({ alias: "checkLoop", items: getItems, run: checkContext })
 		.build();
 
 	const engine = rival(workflow);
@@ -562,10 +530,7 @@ async function testBodyStepVisibility() {
 	const bodyFlow = createWorkflow("bodyVis").step(validateItem).step(chargeItem).build();
 
 	const workflow = createWorkflow("bodyVisTest")
-		.forEach("processAll", {
-			items: getItems,
-			do: bodyFlow,
-		})
+		.forEach({ alias: "processAll", items: getItems, run: bodyFlow })
 		.build();
 
 	const engine = rival(workflow);
@@ -602,10 +567,7 @@ async function testBeforeAfterLoop() {
 
 	const workflow = createWorkflow("beforeAfter")
 		.step(beforeLoop)
-		.forEach("processEach", {
-			items: getItems,
-			do: processItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: processItem })
 		.step(afterLoop)
 		.build();
 
@@ -635,7 +597,7 @@ async function testLastStepAfterLoop() {
 
 	function checkLastStep({ lastStep }: StepContext) {
 		return {
-			lastStepName: lastStep.stepName,
+			lastStepName: lastStep.alias,
 			lastStepHasIterations:
 				lastStep.result !== undefined &&
 				typeof lastStep.result === "object" &&
@@ -645,10 +607,7 @@ async function testLastStepAfterLoop() {
 	}
 
 	const workflow = createWorkflow("lastStepCheck")
-		.forEach("myLoop", {
-			items: getItems,
-			do: processItem,
-		})
+		.forEach({ alias: "myLoop", items: getItems, run: processItem })
 		.step(checkLastStep)
 		.build();
 
@@ -661,7 +620,7 @@ async function testLastStepAfterLoop() {
 		lastStepName: string;
 		lastStepHasIterations: boolean;
 	};
-	assert(checkResult.lastStepName === "myLoop", "lastStep.stepName is loop name");
+	assert(checkResult.lastStepName === "myLoop", "lastStep.alias is loop alias");
 	assert(checkResult.lastStepHasIterations === true, "lastStep.result has iterations");
 }
 
@@ -673,10 +632,7 @@ async function testHardFailureStopsLoop() {
 	console.log("\n--- TEST: Execution — hard failure stops sequential loop ---\n");
 
 	const workflow = createWorkflow("hardFail")
-		.forEach("loopFail", {
-			items: getItems,
-			do: failingItem,
-		})
+		.forEach({ alias: "loopFail", items: getItems, run: failingItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -705,10 +661,7 @@ async function testStepsAfterFailedLoopSkipped() {
 	console.log("\n--- TEST: Execution — steps after failed loop do not run ---\n");
 
 	const workflow = createWorkflow("afterFail")
-		.forEach("loopFail", {
-			items: getItems,
-			do: failingItem,
-		})
+		.forEach({ alias: "loopFail", items: getItems, run: failingItem })
 		.step(afterLoop)
 		.build();
 
@@ -730,10 +683,7 @@ async function testContinueOnError() {
 	console.log("\n--- TEST: Execution — continueOnError in sequential loop ---\n");
 
 	const workflow = createWorkflow("softFail")
-		.forEach("loopSoft", {
-			items: getItems,
-			do: softFailItem,
-		})
+		.forEach({ alias: "loopSoft", items: getItems, run: softFailItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -765,12 +715,8 @@ async function testParallelHardFailureFailsWorkflow() {
 	console.log("\n--- TEST: Execution — hard failure in parallel loop fails workflow ---\n");
 
 	const workflow = createWorkflow("parHardFail")
-		.forEach("loopFailPar", {
-			items: getItems,
-			do: failingItem,
-			parallel: true,
-		})
-		.step({ name: "afterMarker", fn: afterMarker })
+		.forEach({ alias: "loopFailPar", items: getItems, run: failingItem, parallel: true })
+		.step({ alias: "afterMarker", run: afterMarker })
 		.build();
 
 	const engine = rival(workflow);
@@ -807,11 +753,7 @@ async function testParallelContinueOnError() {
 	console.log("\n--- TEST: Execution — continueOnError in parallel loop ---\n");
 
 	const workflow = createWorkflow("parSoftFail")
-		.forEach("loopSoftPar", {
-			items: getItems,
-			do: softFailItem,
-			parallel: true,
-		})
+		.forEach({ alias: "loopSoftPar", items: getItems, run: softFailItem, parallel: true })
 		.build();
 
 	const engine = rival(workflow);
@@ -846,17 +788,11 @@ async function testNestedForEachRecursion() {
 	console.log("\n--- TEST: Execution — nested forEach recursion ---\n");
 
 	const innerWorkflow = createWorkflow("innerBody")
-		.forEach("numbers", {
-			items: getGroupNumbers,
-			do: squareNumber,
-		})
+		.forEach({ alias: "numbers", items: getGroupNumbers, run: squareNumber })
 		.build();
 
 	const workflow = createWorkflow("nestedLoops")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow })
 		.build();
 
 	const engine = rival(workflow);
@@ -909,18 +845,11 @@ async function testNestedForEachOuterParallel() {
 	console.log("\n--- TEST: Execution — nested forEach with outer parallel ---\n");
 
 	const innerWorkflow = createWorkflow("innerOuterPar")
-		.forEach("numbers", {
-			items: getGroupNumbers,
-			do: squareNumber,
-		})
+		.forEach({ alias: "numbers", items: getGroupNumbers, run: squareNumber })
 		.build();
 
 	const workflow = createWorkflow("nestedOuterParallel")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-			parallel: true,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow, parallel: true })
 		.build();
 
 	const engine = rival(workflow);
@@ -974,18 +903,11 @@ async function testNestedForEachInnerParallel() {
 	console.log("\n--- TEST: Execution — nested forEach with inner parallel ---\n");
 
 	const innerWorkflow = createWorkflow("innerPar")
-		.forEach("numbers", {
-			items: getGroupNumbers,
-			do: squareNumber,
-			parallel: true,
-		})
+		.forEach({ alias: "numbers", items: getGroupNumbers, run: squareNumber, parallel: true })
 		.build();
 
 	const workflow = createWorkflow("nestedInnerParallel")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow })
 		.build();
 
 	const engine = rival(workflow);
@@ -1038,17 +960,11 @@ async function testNestedForEachInnerHardFailureSequentialOuter() {
 	console.log("\n--- TEST: Execution — nested forEach hard failure (sequential outer) ---\n");
 
 	const innerWorkflow = createWorkflow("innerHardFail")
-		.forEach("numbers", {
-			items: getGroupNumbers,
-			do: squareOrFailOnThree,
-		})
+		.forEach({ alias: "numbers", items: getGroupNumbers, run: squareOrFailOnThree })
 		.build();
 
 	const workflow = createWorkflow("nestedHardFailSeqOuter")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow })
 		.build();
 
 	const engine = rival(workflow);
@@ -1100,18 +1016,11 @@ async function testNestedForEachInnerHardFailureParallelOuter() {
 	console.log("\n--- TEST: Execution — nested forEach hard failure (parallel outer) ---\n");
 
 	const innerWorkflow = createWorkflow("innerHardFailParOuter")
-		.forEach("numbers", {
-			items: getGroupNumbers,
-			do: squareOrFailOnThree,
-		})
+		.forEach({ alias: "numbers", items: getGroupNumbers, run: squareOrFailOnThree })
 		.build();
 
 	const workflow = createWorkflow("nestedHardFailParOuter")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-			parallel: true,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow, parallel: true })
 		.build();
 
 	const engine = rival(workflow);
@@ -1154,17 +1063,11 @@ async function testNestedForEachInnerContinueOnError() {
 	console.log("\n--- TEST: Execution — nested forEach continueOnError in inner loop ---\n");
 
 	const innerWorkflow = createWorkflow("innerSoftFail")
-		.forEach("numbers", {
-			items: getGroupNumbers,
-			do: squareOrSoftFailOnThree,
-		})
+		.forEach({ alias: "numbers", items: getGroupNumbers, run: squareOrSoftFailOnThree })
 		.build();
 
 	const workflow = createWorkflow("nestedSoftFail")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow })
 		.build();
 
 	const engine = rival(workflow);
@@ -1214,14 +1117,11 @@ async function testRetrySequentialForEach() {
 	resetRetryAttempts();
 
 	const doFlow = createWorkflow("retryDoSeq")
-		.step({ name: "retryByItemId", fn: retryByItemId, maxAttempts: 3 })
+		.step({ alias: "retryByItemId", run: retryByItemId, maxAttempts: 3 })
 		.build();
 
 	const workflow = createWorkflow("retrySeqLoop")
-		.forEach("itemsLoop", {
-			items: getItems,
-			do: doFlow,
-		})
+		.forEach({ alias: "itemsLoop", items: getItems, run: doFlow })
 		.build();
 
 	const engine = rival(workflow);
@@ -1255,15 +1155,11 @@ async function testRetryParallelForEach() {
 	resetRetryAttempts();
 
 	const doFlow = createWorkflow("retryDoPar")
-		.step({ name: "retryByItemId", fn: retryByItemId, maxAttempts: 3 })
+		.step({ alias: "retryByItemId", run: retryByItemId, maxAttempts: 3 })
 		.build();
 
 	const workflow = createWorkflow("retryParLoop")
-		.forEach("itemsLoop", {
-			items: getItems,
-			do: doFlow,
-			parallel: true,
-		})
+		.forEach({ alias: "itemsLoop", items: getItems, run: doFlow, parallel: true })
 		.build();
 
 	const engine = rival(workflow);
@@ -1301,21 +1197,15 @@ async function testNestedForEachRetrySuccess() {
 	resetRetryAttempts();
 
 	const retryBody = createWorkflow("retryBodyNested")
-		.step({ name: "retryByItemId", fn: retryByItemId, maxAttempts: 3 })
+		.step({ alias: "retryByItemId", run: retryByItemId, maxAttempts: 3 })
 		.build();
 
 	const innerWorkflow = createWorkflow("innerRetryLoop")
-		.forEach("retryItems", {
-			items: getGroupRetryItems,
-			do: retryBody,
-		})
+		.forEach({ alias: "retryItems", items: getGroupRetryItems, run: retryBody })
 		.build();
 
 	const workflow = createWorkflow("nestedRetrySuccess")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow })
 		.build();
 
 	const engine = rival(workflow);
@@ -1368,21 +1258,15 @@ async function testNestedForEachRetryExhaustionFails() {
 	resetRetryAttempts();
 
 	const retryBody = createWorkflow("retryBodyExhausted")
-		.step({ name: "retryByItemId", fn: retryByItemId, maxAttempts: 2 })
+		.step({ alias: "retryByItemId", run: retryByItemId, maxAttempts: 2 })
 		.build();
 
 	const innerWorkflow = createWorkflow("innerRetryExhausted")
-		.forEach("retryItems", {
-			items: getGroupRetryItems,
-			do: retryBody,
-		})
+		.forEach({ alias: "retryItems", items: getGroupRetryItems, run: retryBody })
 		.build();
 
 	const workflow = createWorkflow("nestedRetryExhausted")
-		.forEach("groups", {
-			items: getGroups,
-			do: innerWorkflow,
-		})
+		.forEach({ alias: "groups", items: getGroups, run: innerWorkflow })
 		.build();
 
 	const engine = rival(workflow);
@@ -1402,10 +1286,7 @@ async function testEmptyItems() {
 	console.log("\n--- TEST: Execution — empty items array ---\n");
 
 	const workflow = createWorkflow("emptyLoop")
-		.forEach("processEach", {
-			items: getItems,
-			do: processItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: processItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -1430,10 +1311,7 @@ async function testViaEngine() {
 	console.log("\n--- TEST: Execution — via Engine rival() API ---\n");
 
 	const workflow = createWorkflow("engineLoop")
-		.forEach("processEach", {
-			items: getItems,
-			do: doubleItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: doubleItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -1460,10 +1338,7 @@ async function testCancelDuringLoopExecution() {
 	console.log("\n--- TEST: Execution — cancel during active loop execution ---\n");
 
 	const workflow = createWorkflow("cancelLoop")
-		.forEach("processEach", {
-			items: getItems,
-			do: slowProcessItem,
-		})
+		.forEach({ alias: "processEach", items: getItems, run: slowProcessItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -1487,10 +1362,7 @@ async function testNonArrayIterator() {
 	console.log("\n--- TEST: Execution — iterator returning non-array fails ---\n");
 
 	const workflow = createWorkflow("badIterator")
-		.forEach("badLoop", {
-			items: returnNonArray,
-			do: processItem,
-		})
+		.forEach({ alias: "badLoop", items: returnNonArray, run: processItem })
 		.build();
 
 	const engine = rival(workflow);
@@ -1509,7 +1381,9 @@ async function testDoubleUnderscoreRejected() {
 	console.log("\n--- TEST: Builder — names containing __ rejected ---\n");
 
 	try {
-		createWorkflow("badName").forEach("bad__name", { items: getItems, do: processItem }).build();
+		createWorkflow("badName")
+			.forEach({ alias: "bad__name", items: getItems, run: processItem })
+			.build();
 		assert(false, "should have thrown");
 	} catch (err) {
 		const msg = (err as Error).message;
@@ -1517,7 +1391,7 @@ async function testDoubleUnderscoreRejected() {
 	}
 
 	try {
-		createWorkflow("badStep").step({ fn: processItem, name: "step__bad" }).build();
+		createWorkflow("badStep").step({ run: processItem, alias: "step__bad" }).build();
 		assert(false, "should have thrown for step name");
 	} catch (err) {
 		const msg = (err as Error).message;
@@ -1537,10 +1411,7 @@ async function testIteratorNameNoCollision() {
 	}
 
 	const workflow = createWorkflow("iterCollision")
-		.forEach("myLoop", {
-			items: getItems,
-			do: iterator,
-		})
+		.forEach({ alias: "myLoop", items: getItems, run: iterator })
 		.build();
 
 	const compiled = compileWorkflow(workflow);
@@ -1549,8 +1420,8 @@ async function testIteratorNameNoCollision() {
 	// Iterator actor and do actor should have different refs
 	assert(actorNames.includes("iterCollision__loop__myLoop__iterator"), "has iterator actor");
 	assert(
-		actorNames.includes("iterCollision__loop__myLoop__do__iterator"),
-		"has do actor (distinct from iterator)",
+		actorNames.includes("iterCollision__loop__myLoop__run__iterator"),
+		"has run actor (distinct from iterator)",
 	);
 
 	// Should also work at runtime

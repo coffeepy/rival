@@ -32,7 +32,7 @@ async function testDelayStep() {
 		input: {},
 		state: {},
 		steps: {},
-		lastStep: { result: undefined, state: {}, stepName: null },
+		lastStep: { result: undefined, state: {}, alias: null },
 		log: {
 			debug: () => {},
 			info: (msg: string | object) =>
@@ -145,7 +145,7 @@ async function testHttpStep() {
 			input: { userId: 42 },
 			state: {},
 			steps: {},
-			lastStep: { result: undefined, state: {}, stepName: null },
+			lastStep: { result: undefined, state: {}, alias: null },
 			log: {
 				debug: () => {},
 				info: (msg: string | object) =>
