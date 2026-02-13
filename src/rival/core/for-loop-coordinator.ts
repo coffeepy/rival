@@ -133,7 +133,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 		const callback = parentType?.getOrCreate(parentKey).onLoopFinished;
 		if (!callback) {
 			console.warn(
-				`[${node.name}/${c.state.workflowId}] Parent callback not found: ${parentRef}/${parentKey}`,
+				`[${node.alias}/${c.state.workflowId}] Parent callback not found: ${parentRef}/${parentKey}`,
 			);
 			return;
 		}
@@ -287,7 +287,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 
 				const iteratorKey = `${workflowId}-${loopKeyPrefix}iterator`;
 				const iteratorActor = iteratorHandle.getOrCreate(iteratorKey);
-				const iteratorCallbackName = `${node.name}:iterator:${token}`;
+				const iteratorCallbackName = `${node.id}:${node.alias}:iterator:${token}`;
 				const iteratorContext = buildStepContext({
 					input,
 					stepResults: c.state.parentStepResults,
@@ -336,19 +336,21 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 					const runtime = c.state.inFlight[String(idx)];
 					if (!runtime || runtime.pendingType) continue;
 
-					if (runtime.nodeIndex >= node.do.length) {
+					if (runtime.nodeIndex >= node.run.length) {
 						completeIteration(c, runtime, false);
 						progressed = true;
 						continue;
 					}
 
-					const currentNode = node.do[runtime.nodeIndex];
+					const currentNode = node.run[runtime.nodeIndex];
 					if (!currentNode) {
 						runtime.nodeIndex += 1;
 						c.state.inFlight[String(idx)] = runtime;
 						progressed = true;
 						continue;
 					}
+					const currentNodeAlias = currentNode.alias;
+					const currentNodeId = currentNode.id;
 
 					const loopContext: LoopContext = {
 						item: c.state.items[runtime.index],
@@ -364,7 +366,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						const client = c.client() as Record<string, unknown>;
 						const stepHandle = getStepActorHandle(client, currentNode.actorRef);
 						if (!stepHandle) {
-							runtime.stepResults[currentNode.name] = toFailedStepResult();
+							runtime.stepResults[currentNodeAlias] = toFailedStepResult();
 							completeIteration(
 								c,
 								runtime,
@@ -375,8 +377,8 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 							continue;
 						}
 
-						const stepKey = `${c.state.workflowId}-${c.state.loopKeyPrefix}iter${runtime.index}-${currentNode.name}`;
-						const callbackName = `${node.name}:iter${runtime.index}:node${runtime.nodeIndex}:${currentNode.name}:${token}`;
+						const stepKey = `${c.state.workflowId}-${c.state.loopKeyPrefix}iter${runtime.index}-${currentNodeId}-${currentNodeAlias}`;
+						const callbackName = `${node.id}:${node.alias}:iter${runtime.index}:node${runtime.nodeIndex}:${currentNodeId}:${currentNodeAlias}:${token}`;
 						const stepActor = stepHandle.getOrCreate(stepKey);
 						const stepContext = buildStepContext({
 							input: c.state.input,
@@ -386,7 +388,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 
 						runtime.pendingType = "step";
 						runtime.pendingCallbackName = callbackName;
-						runtime.pendingNodeName = currentNode.name;
+						runtime.pendingNodeName = currentNodeAlias;
 						c.state.inFlight[String(idx)] = runtime;
 						c.state.activeStepActors[callbackName] = { ref: currentNode.actorRef, key: stepKey };
 
@@ -408,7 +410,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						const client = c.client() as Record<string, unknown>;
 						const childHandle = getLoopActorHandle(client, currentNode.loopCoordinatorActorRef);
 						if (!childHandle) {
-							runtime.stepResults[currentNode.name] = toFailedStepResult();
+							runtime.stepResults[currentNodeAlias] = toFailedStepResult();
 							completeIteration(
 								c,
 								runtime,
@@ -419,13 +421,13 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 							continue;
 						}
 
-						const childKey = `${c.state.workflowId}-${c.state.loopKeyPrefix}iter${runtime.index}-${currentNode.name}-loop`;
-						const callbackName = `${node.name}:iter${runtime.index}:node${runtime.nodeIndex}:${currentNode.name}:loop:${token}`;
+						const childKey = `${c.state.workflowId}-${c.state.loopKeyPrefix}iter${runtime.index}-${currentNodeId}-${currentNodeAlias}-loop`;
+						const callbackName = `${node.id}:${node.alias}:iter${runtime.index}:node${runtime.nodeIndex}:${currentNodeId}:${currentNodeAlias}:loop:${token}`;
 						const childLoop = childHandle.getOrCreate(childKey);
 
 						runtime.pendingType = "loop";
 						runtime.pendingCallbackName = callbackName;
-						runtime.pendingNodeName = currentNode.name;
+						runtime.pendingNodeName = currentNodeAlias;
 						c.state.inFlight[String(idx)] = runtime;
 						c.state.activeChildLoops[callbackName] = {
 							ref: currentNode.loopCoordinatorActorRef,
@@ -438,7 +440,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 							c.state.input,
 							mergedStepResults,
 							loopContext,
-							`${c.state.loopKeyPrefix}iter${runtime.index}-${currentNode.name}-`,
+							`${c.state.loopKeyPrefix}iter${runtime.index}-${currentNodeId}-${currentNodeAlias}-`,
 							c.name,
 							c.state.selfKey,
 							callbackName,
@@ -449,7 +451,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						continue;
 					}
 
-					runtime.stepResults[currentNode.name] = toFailedStepResult();
+					runtime.stepResults[currentNodeAlias] = toFailedStepResult();
 					completeIteration(c, runtime, true, `Unsupported node type "${currentNode.type}"`);
 					progressed = true;
 				}
@@ -482,7 +484,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						await finalizeLoop(
 							c,
 							"failed",
-							c.state.firstHardFailureError ?? `Loop "${node.name}" had a failed iteration`,
+							c.state.firstHardFailureError ?? `Loop "${node.alias}" had a failed iteration`,
 						);
 						return;
 					}
@@ -521,7 +523,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						await finalizeLoop(
 							c,
 							"failed",
-							`forEach "${node.name}": iterator must return an array, got ${typeof result}`,
+							`forEach "${node.alias}": iterator must return an array, got ${typeof result}`,
 						);
 						return;
 					}
@@ -618,7 +620,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						}
 					} catch (err) {
 						console.warn(
-							`[${node.name}/${c.state.workflowId}] Cancel propagation to step failed:`,
+							`[${node.alias}/${c.state.workflowId}] Cancel propagation to step failed:`,
 							err,
 						);
 					}
@@ -632,7 +634,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						}
 					} catch (err) {
 						console.warn(
-							`[${node.name}/${c.state.workflowId}] Cancel propagation to loop failed:`,
+							`[${node.alias}/${c.state.workflowId}] Cancel propagation to loop failed:`,
 							err,
 						);
 					}

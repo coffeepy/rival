@@ -13,7 +13,7 @@
  *
  * const compiled = compileWorkflow(definition);
  * // compiled.actors = { tree_findTree, tree_chopTree, tree_coordinator }
- * // compiled.plan = [{ type: 'step', name: 'findTree', actorRef: 'tree_findTree' }, ...]
+ * // compiled.plan = [{ type: 'step', id: 's1', alias: 'findTree', actorRef: 'tree_findTree' }, ...]
  * ```
  */
 
@@ -31,6 +31,7 @@ import type {
 	StepPlanNode,
 	WorkflowDefinition,
 } from "../types";
+import { validateForEachConcurrency } from "./for-each-validation";
 
 const ACTION_TIMEOUT_BUFFER_MS = 1000;
 
@@ -44,7 +45,7 @@ export function isForEachDefinition(
 }
 
 /**
- * Type guard for forEach `do` shape.
+ * Type guard for forEach `run` shape.
  */
 function isWorkflowDefinition(
 	value: StepFunction | WorkflowDefinition,
@@ -76,18 +77,26 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 		actors[ref] = actorDef;
 	}
 
-	function validateUniqueNames(
+	function validateUniqueIdentities(
 		entries: (StepDefinition | ForEachDefinition)[],
 		scope: string,
 	): void {
-		const seen = new Set<string>();
+		const seenIds = new Set<string>();
+		const seenAliases = new Set<string>();
 		for (const entry of entries) {
-			if (seen.has(entry.name)) {
+			if (seenIds.has(entry.id)) {
 				throw new Error(
-					`Workflow "${name}" has duplicate step name "${entry.name}" in ${scope}. Step names must be unique within a scope.`,
+					`Workflow "${name}" has duplicate node id "${entry.id}" in ${scope}. Node ids must be unique within a scope.`,
 				);
 			}
-			seen.add(entry.name);
+			seenIds.add(entry.id);
+
+			if (seenAliases.has(entry.alias)) {
+				throw new Error(
+					`Workflow "${name}" has duplicate alias "${entry.alias}" in ${scope}. Aliases must be unique within a scope.`,
+				);
+			}
+			seenAliases.add(entry.alias);
 		}
 	}
 
@@ -96,14 +105,14 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 	}
 
 	function resolveActorConfig(
-		stepName: string,
+		stepAlias: string,
 		config?: StepDefinition["config"],
 	): StepActorConfig | undefined {
 		if (!config) return undefined;
 
 		if (config.timeout !== undefined && config.timeout <= 0) {
 			throw new Error(
-				`Workflow "${name}" step "${stepName}" has invalid timeout ${config.timeout}. Timeout must be > 0.`,
+				`Workflow "${name}" step "${stepAlias}" has invalid timeout ${config.timeout}. Timeout must be > 0.`,
 			);
 		}
 		const actorOptions: Record<string, unknown> = { ...(config.actor?.options ?? {}) };
@@ -113,7 +122,7 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 			(typeof rawActionTimeout !== "number" || rawActionTimeout <= 0)
 		) {
 			throw new Error(
-				`Workflow "${name}" step "${stepName}" has invalid actor.options.actionTimeout ${String(rawActionTimeout)}. actor.options.actionTimeout must be a positive number.`,
+				`Workflow "${name}" step "${stepAlias}" has invalid actor.options.actionTimeout ${String(rawActionTimeout)}. actor.options.actionTimeout must be a positive number.`,
 			);
 		}
 
@@ -131,46 +140,43 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 		scope: string,
 		namespace: string[] = [],
 	): PlanNode[] {
-		validateUniqueNames(entries, scope);
+		validateUniqueIdentities(entries, scope);
 
 		const compiled: PlanNode[] = [];
 
 		for (const entry of entries) {
 			if (isForEachDefinition(entry)) {
-				if (entry.concurrency !== undefined) {
-					if (!Number.isInteger(entry.concurrency) || entry.concurrency < 1) {
-						throw new Error(
-							`Workflow "${name}" loop "${entry.name}" has invalid concurrency ${String(entry.concurrency)}. concurrency must be an integer >= 1.`,
-						);
-					}
-					if (!entry.parallel) {
-						throw new Error(
-							`Workflow "${name}" loop "${entry.name}" sets concurrency but parallel is not true.`,
-						);
-					}
-				}
+				validateForEachConcurrency(name, entry.alias, entry);
 
-				const loopName = entry.name;
-				const loopNamespace = [...namespace, "loop", loopName];
+				const loopAlias = entry.alias;
+				const loopNamespace = [...namespace, "loop", loopAlias];
 				const iteratorActorRef = prefixedRef([...loopNamespace, "iterator"]);
 				const loopCoordinatorActorRef = prefixedRef([...loopNamespace, "coordinator"]);
 				registerActor(iteratorActorRef, createStepActor(entry.items));
 
-				const doEntries: (StepDefinition | ForEachDefinition)[] = isWorkflowDefinition(entry.do)
-					? entry.do.steps
-					: [{ fn: entry.do, name: entry.do.name || "do" }];
+				const runEntries: (StepDefinition | ForEachDefinition)[] = isWorkflowDefinition(entry.run)
+					? entry.run.steps
+					: [
+							{
+								id: `${entry.id}_run`,
+								alias: entry.run.name || "run",
+								run: entry.run,
+							},
+						];
 
-				const doPlan = compileEntries(doEntries, `${scope} -> forEach("${loopName}") do`, [
+				const runPlan = compileEntries(runEntries, `${scope} -> forEach("${loopAlias}") run`, [
 					...loopNamespace,
-					"do",
+					"run",
 				]);
 
 				const loopNode: LoopPlanNode = {
 					type: "loop",
-					name: loopName,
+					id: entry.id,
+					alias: entry.alias,
+					name: entry.name,
 					iteratorActorRef,
 					loopCoordinatorActorRef,
-					do: doPlan,
+					run: runPlan,
 					parallel: entry.parallel,
 					concurrency: entry.concurrency,
 				};
@@ -180,12 +186,16 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
 			}
 
 			const actorRef =
-				namespace.length === 0 ? `${name}_${entry.name}` : prefixedRef([...namespace, entry.name]);
-			const actorConfig = resolveActorConfig(entry.name, entry.config);
-			registerActor(actorRef, createStepActor(entry.fn, actorConfig));
+				namespace.length === 0
+					? `${name}_${entry.alias}`
+					: prefixedRef([...namespace, entry.alias]);
+			const actorConfig = resolveActorConfig(entry.alias, entry.config);
+			registerActor(actorRef, createStepActor(entry.run, actorConfig));
 
 			const planNode: StepPlanNode = {
 				type: "step",
+				id: entry.id,
+				alias: entry.alias,
 				name: entry.name,
 				actorRef,
 				config: entry.config,
@@ -223,8 +233,8 @@ export function compileWorkflow(definition: WorkflowDefinition): CompiledWorkflo
  * ```typescript
  * const compiled = defineWorkflow('simple', {
  *   steps: [
- *     { fn: step1, name: 'step1' },
- *     { fn: step2, name: 'step2' },
+ *     { id: 's1', alias: 'step1', run: step1 },
+ *     { id: 's2', alias: 'step2', run: step2 },
  *   ],
  * });
  * ```

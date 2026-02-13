@@ -59,7 +59,7 @@ async function testBuilder() {
 	console.log("Simple workflow:");
 	console.log(`  Name: ${simpleWorkflow.name}`);
 	console.log(`  Steps: ${simpleWorkflow.steps.length}`);
-	console.log(`  Step names: ${simpleWorkflow.steps.map((s) => s.name).join(", ")}`);
+	console.log(`  Step aliases: ${simpleWorkflow.steps.map((s) => s.alias).join(", ")}`);
 
 	if (simpleWorkflow.name !== "simple" || simpleWorkflow.steps.length !== 1) {
 		throw new Error("Simple workflow test failed");
@@ -75,7 +75,7 @@ async function testBuilder() {
 		.input(inputSchema)
 		.description("Process a customer order")
 		.step(validateInput)
-		.step({ fn: processPayment, timeout: 30000, maxAttempts: 3 })
+		.step({ run: processPayment, timeout: 30000, maxAttempts: 3 })
 		.step(sendConfirmation)
 		.build();
 
@@ -87,7 +87,7 @@ async function testBuilder() {
 
 	for (const step of orderWorkflow.steps) {
 		const config = "config" in step ? step.config : undefined;
-		console.log(`    - ${step.name}${config ? ` (config: ${JSON.stringify(config)})` : ""}`);
+		console.log(`    - ${step.alias}${config ? ` (config: ${JSON.stringify(config)})` : ""}`);
 	}
 
 	if (orderWorkflow.steps.length !== 3 || !orderWorkflow.inputSchema) {
@@ -95,7 +95,7 @@ async function testBuilder() {
 	}
 
 	// Verify step config was applied
-	const paymentStep = orderWorkflow.steps.find((s) => s.name === "processPayment");
+	const paymentStep = orderWorkflow.steps.find((s) => s.alias === "processPayment");
 	const paymentConfig = paymentStep && "config" in paymentStep ? paymentStep.config : undefined;
 	if (!paymentConfig?.timeout || paymentConfig.timeout !== 30000) {
 		throw new Error("Step config not applied correctly");
@@ -135,7 +135,7 @@ async function testCompiler() {
 
 	for (const node of compiled.plan) {
 		if (node.type === "step") {
-			console.log(`    - ${node.name} -> ${node.actorRef}`);
+			console.log(`    - ${node.alias} -> ${node.actorRef}`);
 		}
 	}
 
@@ -156,9 +156,9 @@ async function testCompiler() {
 	// Verify plan references correct actor refs
 	for (const node of compiled.plan) {
 		if (node.type === "step") {
-			const expectedActorRef = `orderFlow_${node.name}`;
+			const expectedActorRef = `orderFlow_${node.alias}`;
 			if (node.actorRef !== expectedActorRef) {
-				throw new Error(`Plan node ${node.name} has wrong actorRef: ${node.actorRef}`);
+				throw new Error(`Plan node ${node.alias} has wrong actorRef: ${node.actorRef}`);
 			}
 		}
 	}
@@ -252,8 +252,8 @@ async function testDefineWorkflow() {
 
 	const compiled = defineWorkflow("quickFlow", {
 		steps: [
-			{ fn: validateInput, name: "validate" },
-			{ fn: processPayment, name: "pay" },
+			{ id: "s1", alias: "validate", run: validateInput },
+			{ id: "s2", alias: "pay", run: processPayment },
 		],
 		inputSchema: z.object({ orderId: z.string(), amount: z.number() }),
 	});

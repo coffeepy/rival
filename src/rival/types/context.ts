@@ -28,8 +28,8 @@ export interface LastStepInfo {
 	result: unknown;
 	/** State from the previous step ({} for first step) */
 	state: StepState;
-	/** Name of the previous step (null for first step) */
-	stepName: string | null;
+	/** Alias key of the previous step (null for first step) */
+	alias: string | null;
 }
 
 /**

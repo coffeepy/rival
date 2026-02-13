@@ -48,7 +48,7 @@ export interface StepConfig {
  */
 export type ErrorHandler = (context: {
 	error: Error;
-	failedStep: { result: unknown; state: StepState; stepName: string; status: string };
+	failedStep: { result: unknown; state: StepState; alias: string; status: string };
 	workflowState: {
 		input: unknown;
 		steps: Record<string, StepResult>;
@@ -100,24 +100,34 @@ export interface StepMetrics {
  * Step definition used internally.
  */
 export interface StepDefinition {
-	fn: StepFunction;
-	name: string;
+	/** Internal unique node ID used for runtime correlation */
+	id: string;
+	/** User-facing key used in context.steps and workflow results */
+	alias: string;
+	/** Optional display label for logs/UI */
+	name?: string;
+	run: StepFunction;
 	config?: StepConfig;
 }
 
 /**
  * ForEach loop definition.
  *
- * `do` accepts either a StepFunction (single step body) or a WorkflowDefinition
+ * `run` accepts either a StepFunction (single step body) or a WorkflowDefinition
  * (multi-step body). The compiler detects which one and compiles accordingly.
  */
 export interface ForEachDefinition {
 	type: "forEach";
-	name: string;
+	/** Internal unique node ID used for runtime correlation */
+	id: string;
+	/** User-facing key used in context.steps and workflow results */
+	alias: string;
+	/** Optional display label for logs/UI */
+	name?: string;
 	/** Step function that returns the items array to iterate over */
 	items: StepFunction;
 	/** Body: a single step function or a full workflow definition */
-	do: StepFunction | WorkflowDefinition;
+	run: StepFunction | WorkflowDefinition;
 	/** Run iterations in parallel (fan-out/fan-in) */
 	parallel?: boolean;
 	/** Max in-flight iterations when running in parallel mode */

@@ -8,7 +8,7 @@
  * const workflow = createWorkflow('processOrder')
  *   .input(z.object({ orderId: z.string() }))
  *   .step(validateOrder)
- *   .step({ fn: processPayment, timeout: 30000 })
+ *   .step({ run: processPayment, timeout: 30000 })
  *   .step(sendConfirmation)
  *   .onError(handleError)
  *   .build();
@@ -25,15 +25,17 @@ import type {
 	StepFunction,
 } from "../types";
 import type { WorkflowDefinition } from "../types";
+import { validateForEachConcurrency } from "./for-each-validation";
 
 /**
- * Step input for the builder - either a function or an object with fn and config.
+ * Step input for the builder - either a function or an object with run + config.
  */
 export type StepInput =
 	| StepFunction
 	| {
-			fn: StepFunction;
-			name?: string;
+			run: StepFunction;
+			id?: string;
+			alias?: string;
 			timeout?: number;
 			actor?: StepActorConfig;
 			maxAttempts?: number;
@@ -46,10 +48,14 @@ export type StepInput =
  * Input for the forEach builder method.
  */
 export interface ForEachInput {
+	/** Optional explicit internal ID */
+	id?: string;
+	/** Optional explicit user-facing alias key */
+	alias?: string;
 	/** Step function that returns the items array to iterate over */
 	items: StepFunction;
 	/** Body: a single step function or a workflow definition */
-	do: StepFunction | WorkflowDefinition;
+	run: StepFunction | WorkflowDefinition;
 	/** Run iterations in parallel (fan-out/fan-in) */
 	parallel?: boolean;
 	/** Max in-flight iterations when parallel is true */
@@ -62,7 +68,10 @@ export interface ForEachInput {
 export class WorkflowBuilder {
 	private readonly _name: string;
 	private _steps: (StepDefinition | ForEachDefinition)[] = [];
-	private _stepNames: Set<string> = new Set();
+	private _aliases: Set<string> = new Set();
+	private _ids: Set<string> = new Set();
+	private _stepCounter = 0;
+	private _loopCounter = 0;
 	private _inputSchema?: ZodSchema;
 	private _onError?: ErrorHandler;
 	private _description?: string;
@@ -71,18 +80,88 @@ export class WorkflowBuilder {
 		this._name = name;
 	}
 
-	private _assertUniqueStepName(stepName: string): void {
-		if (stepName.includes("__")) {
+	private _validateIdentifier(value: string, label: string): void {
+		if (!value.trim()) {
+			throw new Error(`Workflow "${this._name}": ${label} must not be empty.`);
+		}
+		if (value.includes("__")) {
 			throw new Error(
-				`Workflow "${this._name}": step/loop name "${stepName}" must not contain "__" (reserved for internal namespacing).`,
+				`Workflow "${this._name}": ${label} "${value}" must not contain "__" (reserved for internal namespacing).`,
 			);
 		}
-		if (this._stepNames.has(stepName)) {
-			throw new Error(
-				`Workflow "${this._name}" already has a step named "${stepName}". Step names must be unique.`,
-			);
+	}
+
+	private _reserveAlias(baseAlias: string, explicit: boolean): string {
+		this._validateIdentifier(baseAlias, "alias");
+		if (explicit) {
+			if (this._aliases.has(baseAlias)) {
+				throw new Error(
+					`Workflow "${this._name}" already has an alias "${baseAlias}". Explicit aliases must be unique.`,
+				);
+			}
+			this._aliases.add(baseAlias);
+			return baseAlias;
 		}
-		this._stepNames.add(stepName);
+
+		if (!this._aliases.has(baseAlias)) {
+			this._aliases.add(baseAlias);
+			return baseAlias;
+		}
+
+		let n = 2;
+		for (;;) {
+			const candidate = `${baseAlias}_${n}`;
+			if (!this._aliases.has(candidate)) {
+				this._aliases.add(candidate);
+				return candidate;
+			}
+			n += 1;
+		}
+	}
+
+	private _reserveId(kind: "step" | "loop", explicitId?: string): string {
+		if (explicitId !== undefined) {
+			this._validateIdentifier(explicitId, "id");
+			if (this._ids.has(explicitId)) {
+				throw new Error(
+					`Workflow "${this._name}" already has an id "${explicitId}". Explicit ids must be unique.`,
+				);
+			}
+			this._ids.add(explicitId);
+			return explicitId;
+		}
+
+		let candidate: string;
+		do {
+			if (kind === "step") {
+				this._stepCounter += 1;
+				candidate = `s${this._stepCounter}`;
+			} else {
+				this._loopCounter += 1;
+				candidate = `l${this._loopCounter}`;
+			}
+		} while (this._ids.has(candidate));
+
+		this._ids.add(candidate);
+		return candidate;
+	}
+
+	private _baseStepAlias(fn: StepFunction): string {
+		const base = fn.name?.trim() || "step";
+		this._validateIdentifier(base, "step function name");
+		return base;
+	}
+
+	private _buildStepConfig(input: Omit<Exclude<StepInput, StepFunction>, "run" | "id" | "alias">) {
+		const { timeout, actor, maxAttempts, onTimeout, backoff, onError } = input;
+		const config: StepConfig = {};
+		if (timeout !== undefined) config.timeout = timeout;
+		if (actor !== undefined) config.actor = actor;
+		if (maxAttempts !== undefined) config.maxAttempts = maxAttempts;
+		if (onTimeout !== undefined) config.onTimeout = onTimeout;
+		if (backoff !== undefined) config.backoff = backoff;
+		if (onError !== undefined) config.onError = onError;
+		return Object.keys(config).length > 0 ? config : undefined;
 	}
 
 	/**
@@ -96,64 +175,46 @@ export class WorkflowBuilder {
 	/**
 	 * Add a step to the workflow.
 	 *
-	 * @param stepInput - Step function or object with fn and config
+	 * @param stepInput - Step function or object with run and config
 	 */
 	step(stepInput: StepInput): this {
 		if (typeof stepInput === "function") {
-			// Simple function - derive name from function name
-			const name = stepInput.name || `step${this._steps.length + 1}`;
-			this._assertUniqueStepName(name);
-			this._steps.push({ fn: stepInput, name });
-		} else {
-			// Object with config
-			const { fn, name, timeout, actor, maxAttempts, onTimeout, backoff, onError } = stepInput;
-			const stepName = name || fn.name || `step${this._steps.length + 1}`;
-			this._assertUniqueStepName(stepName);
-
-			const config: StepConfig = {};
-			if (timeout !== undefined) config.timeout = timeout;
-			if (actor !== undefined) config.actor = actor;
-			if (maxAttempts !== undefined) config.maxAttempts = maxAttempts;
-			if (onTimeout !== undefined) config.onTimeout = onTimeout;
-			if (backoff !== undefined) config.backoff = backoff;
-			if (onError !== undefined) config.onError = onError;
-
-			this._steps.push({
-				fn,
-				name: stepName,
-				config: Object.keys(config).length > 0 ? config : undefined,
-			});
+			const id = this._reserveId("step");
+			const alias = this._reserveAlias(this._baseStepAlias(stepInput), false);
+			this._steps.push({ id, alias, run: stepInput });
+			return this;
 		}
 
+		const id = this._reserveId("step", stepInput.id);
+		const alias = this._reserveAlias(
+			stepInput.alias ?? this._baseStepAlias(stepInput.run),
+			stepInput.alias !== undefined,
+		);
+		this._steps.push({
+			id,
+			alias,
+			run: stepInput.run,
+			config: this._buildStepConfig(stepInput),
+		});
 		return this;
 	}
 
 	/**
 	 * Add a forEach loop to the workflow.
 	 *
-	 * @param name - Unique name for this loop
-	 * @param config - Loop configuration (items, do, parallel)
+	 * @param config - Loop configuration (items, run, parallel)
 	 */
-	forEach(name: string, config: ForEachInput): this {
-		if (config.concurrency !== undefined) {
-			if (!Number.isInteger(config.concurrency) || config.concurrency < 1) {
-				throw new Error(
-					`Workflow "${this._name}" loop "${name}" has invalid concurrency ${String(config.concurrency)}. concurrency must be an integer >= 1.`,
-				);
-			}
-			if (!config.parallel) {
-				throw new Error(
-					`Workflow "${this._name}" loop "${name}" sets concurrency but parallel is not true.`,
-				);
-			}
-		}
+	forEach(config: ForEachInput): this {
+		const id = this._reserveId("loop", config.id);
+		const alias = this._reserveAlias(config.alias ?? "forEach", config.alias !== undefined);
+		validateForEachConcurrency(this._name, alias, config);
 
-		this._assertUniqueStepName(name);
 		this._steps.push({
 			type: "forEach",
-			name,
+			id,
+			alias,
 			items: config.items,
-			do: config.do,
+			run: config.run,
 			parallel: config.parallel,
 			concurrency: config.concurrency,
 		});
@@ -205,7 +266,7 @@ export class WorkflowBuilder {
  * const workflow = createWorkflow('myWorkflow')
  *   .input(z.object({ userId: z.string() }))
  *   .step(fetchUser)
- *   .step({ fn: processData, timeout: 5000 })
+ *   .step({ run: processData, timeout: 5000 })
  *   .build();
  * ```
  */

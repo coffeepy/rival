@@ -40,7 +40,7 @@ export interface StepActorState {
 	context: ExecuteContext | null;
 	config: StepConfig | null;
 	workflowId: string | null;
-	activeStepName: string | null;
+	activeStepAlias: string | null;
 	coordinatorRef: string | null;
 	coordinatorKey: string | null;
 	coordinatorToken: number | null;
@@ -101,7 +101,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 ) {
 	function createLogger(c: { state: StepActorState }) {
 		const workflowId = c.state.workflowId ?? "unknown";
-		const stepName = c.state.activeStepName ?? "unknown";
+		const stepName = c.state.activeStepAlias ?? "unknown";
 		return createStepLogger({ workflowId, stepName }, c.state.logs, true);
 	}
 
@@ -123,7 +123,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 		if (!callback) return;
 
 		await callback(
-			c.state.activeStepName,
+			c.state.activeStepAlias,
 			c.state.status,
 			c.state.result,
 			c.state.error,
@@ -176,7 +176,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				failedStep: {
 					result: c.state.result,
 					state: c.state.stepState,
-					stepName: c.state.activeStepName ?? "unknown",
+					alias: c.state.activeStepAlias ?? "unknown",
 					status: c.state.status,
 				},
 				workflowState: {
@@ -207,7 +207,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 			context: null as ExecuteContext | null,
 			config: null as StepConfig | null,
 			workflowId: null as string | null,
-			activeStepName: null as string | null,
+			activeStepAlias: null as string | null,
 			coordinatorRef: null as string | null,
 			coordinatorKey: null as string | null,
 			coordinatorToken: null as number | null,
@@ -242,7 +242,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				c.state.context = context;
 				c.state.config = config ?? {};
 				c.state.workflowId = workflowId ?? "unknown";
-				c.state.activeStepName = stepName ?? "unknown";
+				c.state.activeStepAlias = stepName ?? "unknown";
 				c.state.coordinatorRef = coordinatorRef ?? null;
 				c.state.coordinatorKey = coordinatorKey ?? null;
 				c.state.coordinatorToken = coordinatorToken ?? null;
@@ -418,7 +418,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 				context: c.state.context,
 				config: c.state.config,
 				workflowId: c.state.workflowId,
-				activeStepName: c.state.activeStepName,
+				activeStepAlias: c.state.activeStepAlias,
 				coordinatorRef: c.state.coordinatorRef,
 				coordinatorKey: c.state.coordinatorKey,
 				coordinatorToken: c.state.coordinatorToken,

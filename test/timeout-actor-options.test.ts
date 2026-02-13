@@ -9,8 +9,8 @@ describe("timeout + actor options", () => {
 	test("builder stores per-step actor options escape hatch", () => {
 		const workflow = createWorkflow("actorOptionsBuilder")
 			.step({
-				fn: noopStep,
-				name: "one",
+				run: noopStep,
+				alias: "one",
 				timeout: 250,
 				actor: {
 					options: {
@@ -22,7 +22,7 @@ describe("timeout + actor options", () => {
 			.build();
 
 		const step = workflow.steps[0];
-		if (!step || step.name !== "one" || !("config" in step)) {
+		if (!step || step.alias !== "one" || !("config" in step)) {
 			throw new Error("Expected first step with config");
 		}
 		expect(step.config?.actor?.options?.noSleep).toBe(true);
@@ -32,8 +32,8 @@ describe("timeout + actor options", () => {
 	test("compile rejects invalid timeout values", () => {
 		const workflow = createWorkflow("invalidTimeout")
 			.step({
-				fn: noopStep,
-				name: "one",
+				run: noopStep,
+				alias: "one",
 				timeout: 0,
 			})
 			.build();
@@ -44,8 +44,8 @@ describe("timeout + actor options", () => {
 	test("compile rejects invalid actor action timeout when timeout is not set", () => {
 		const workflow = createWorkflow("invalidActorTimeout")
 			.step({
-				fn: noopStep,
-				name: "one",
+				run: noopStep,
+				alias: "one",
 				actor: {
 					options: {
 						actionTimeout: 0,
@@ -60,8 +60,8 @@ describe("timeout + actor options", () => {
 	test("compile accepts actor options and timeout together (timeout controls action timeout)", () => {
 		const workflow = createWorkflow("timeoutOverridesActorTimeout")
 			.step({
-				fn: noopStep,
-				name: "one",
+				run: noopStep,
+				alias: "one",
 				timeout: 100,
 				actor: {
 					options: {

@@ -82,9 +82,9 @@ function continueOnErrorStep({ log }: StepContext) {
 }
 
 function checkLastStep({ steps, lastStep, log }: StepContext) {
-	log.info(`lastStep points to: ${lastStep.stepName}`);
+	log.info(`lastStep points to: ${lastStep.alias}`);
 	return {
-		lastStepName: lastStep.stepName,
+		lastStepName: lastStep.alias,
 		lastStepResult: lastStep.result,
 		step2Status: steps.continueStep?.status,
 	};
@@ -109,36 +109,61 @@ const checkLastStepActor = createStepActor(checkLastStep);
 // =============================================================================
 
 const happyPathPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
-	{ type: "step", name: "chopTree", actorRef: "chopTreeStep" },
-	{ type: "step", name: "processLumber", actorRef: "processLumberStep" },
+	{ type: "step", id: "s1", alias: "findTree", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", id: "s2", alias: "chopTree", name: "chopTree", actorRef: "chopTreeStep" },
+	{
+		type: "step",
+		id: "s3",
+		alias: "processLumber",
+		name: "processLumber",
+		actorRef: "processLumberStep",
+	},
 ];
 
 const failurePlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
-	{ type: "step", name: "failStep", actorRef: "failingStepActor" },
-	{ type: "step", name: "chopTree", actorRef: "chopTreeStep" }, // Should not run
+	{ type: "step", id: "s1", alias: "findTree", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", id: "s2", alias: "failStep", name: "failStep", actorRef: "failingStepActor" },
+	{ type: "step", id: "s3", alias: "chopTree", name: "chopTree", actorRef: "chopTreeStep" }, // Should not run
 ];
 
 const retryPlan: PlanNode[] = [
-	{ type: "step", name: "flakyStep", actorRef: "flakyStepActor", config: { maxAttempts: 5 } },
+	{
+		type: "step",
+		id: "s1",
+		alias: "flakyStep",
+		name: "flakyStep",
+		actorRef: "flakyStepActor",
+		config: { maxAttempts: 5 },
+	},
 ];
 
 const skipPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
-	{ type: "step", name: "skipStep", actorRef: "skipStepActor" },
-	{ type: "step", name: "chopTree", actorRef: "chopTreeStep" },
+	{ type: "step", id: "s1", alias: "findTree", name: "findTree", actorRef: "findTreeStep" },
+	{ type: "step", id: "s2", alias: "skipStep", name: "skipStep", actorRef: "skipStepActor" },
+	{ type: "step", id: "s3", alias: "chopTree", name: "chopTree", actorRef: "chopTreeStep" },
 ];
 
 const continueOnErrorPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
-	{ type: "step", name: "continueStep", actorRef: "continueOnErrorStepActor" },
-	{ type: "step", name: "checkStep", actorRef: "checkLastStepActor" },
+	{ type: "step", id: "s1", alias: "findTree", name: "findTree", actorRef: "findTreeStep" },
+	{
+		type: "step",
+		id: "s2",
+		alias: "continueStep",
+		name: "continueStep",
+		actorRef: "continueOnErrorStepActor",
+	},
+	{ type: "step", id: "s3", alias: "checkStep", name: "checkStep", actorRef: "checkLastStepActor" },
 ];
 
 const continueOnErrorLastPlan: PlanNode[] = [
-	{ type: "step", name: "findTree", actorRef: "findTreeStep" },
-	{ type: "step", name: "continueStep", actorRef: "continueOnErrorStepActor" },
+	{ type: "step", id: "s1", alias: "findTree", name: "findTree", actorRef: "findTreeStep" },
+	{
+		type: "step",
+		id: "s2",
+		alias: "continueStep",
+		name: "continueStep",
+		actorRef: "continueOnErrorStepActor",
+	},
 ];
 
 const happyPathCoordinator = createWorkflowCoordinator("happyPath", happyPathPlan);
@@ -315,9 +340,9 @@ async function main() {
 	console.log("---\n");
 
 	// Test 7, 8, 9: Duplicate step name detection (synchronous)
-	const test7Passed = testBuilderRejectsDuplicateStepNames();
-	const test8Passed = testCompilerRejectsDuplicateStepNames();
-	const test9Passed = testCoordinatorRejectsDuplicateStepNames();
+	const test7Passed = testBuilderAllowsDuplicateFunctionReuse();
+	const test8Passed = testCompilerRejectsDuplicateAliases();
+	const test9Passed = testCoordinatorRejectsDuplicateAliases();
 
 	// Summary
 	console.log("=".repeat(60));
@@ -354,37 +379,38 @@ async function main() {
 // DUPLICATE STEP NAME TESTS (synchronous, no runtime needed)
 // =============================================================================
 
-function testBuilderRejectsDuplicateStepNames(): boolean {
-	console.log("--- TEST 7: Builder rejects duplicate step names ---\n");
+function testBuilderAllowsDuplicateFunctionReuse(): boolean {
+	console.log("--- TEST 7: Builder allows duplicate function reuse ---\n");
 	try {
-		createWorkflow("dupTest")
+		const workflow = createWorkflow("dupTest")
 			.step(chopTree)
 			.step(chopTree) // same function = same derived name
 			.build();
-		console.log("  FAILED: expected error was not thrown");
-		return false;
-	} catch (err) {
-		const msg = (err as Error).message;
-		const passed = msg.includes('already has a step named "chopTree"');
-		console.log(`  Error: ${msg}`);
+		const aliases = workflow.steps.map((s) => s.alias);
+		const passed = aliases[0] === "chopTree" && aliases[1] === "chopTree_2";
+		console.log(`  Aliases: ${aliases.join(", ")}`);
 		console.log(`  ${passed ? "passed" : "FAILED"}`);
 		console.log("---\n");
 		return passed;
+	} catch (err) {
+		console.log(`  FAILED with error: ${(err as Error).message}`);
+		console.log("---\n");
+		return false;
 	}
 }
 
-function testCoordinatorRejectsDuplicateStepNames(): boolean {
-	console.log("--- TEST 9: Coordinator rejects duplicate step names (Zod) ---\n");
+function testCoordinatorRejectsDuplicateAliases(): boolean {
+	console.log("--- TEST 9: Coordinator rejects duplicate aliases (Zod) ---\n");
 	try {
 		createWorkflowCoordinator("dupCoord", [
-			{ type: "step", name: "doWork", actorRef: "workStep" },
-			{ type: "step", name: "doWork", actorRef: "workStep2" }, // duplicate name
+			{ type: "step", id: "s1", alias: "doWork", name: "doWork", actorRef: "workStep" },
+			{ type: "step", id: "s2", alias: "doWork", name: "doWork", actorRef: "workStep2" }, // duplicate alias
 		]);
 		console.log("  FAILED: expected error was not thrown");
 		return false;
 	} catch (err) {
 		const msg = (err as Error).message;
-		const passed = msg.includes('Duplicate step name "doWork"');
+		const passed = msg.includes('Duplicate alias "doWork"');
 		console.log(`  Error: ${msg}`);
 		console.log(`  ${passed ? "passed" : "FAILED"}`);
 		console.log("---\n");
@@ -392,21 +418,21 @@ function testCoordinatorRejectsDuplicateStepNames(): boolean {
 	}
 }
 
-function testCompilerRejectsDuplicateStepNames(): boolean {
-	console.log("--- TEST 8: Compiler rejects duplicate step names ---\n");
+function testCompilerRejectsDuplicateAliases(): boolean {
+	console.log("--- TEST 8: Compiler rejects duplicate aliases ---\n");
 	try {
 		compileWorkflow({
 			name: "dupCompile",
 			steps: [
-				{ fn: chopTree, name: "sharedName" },
-				{ fn: processLumber, name: "sharedName" }, // duplicate name
+				{ id: "s1", alias: "sharedName", run: chopTree },
+				{ id: "s2", alias: "sharedName", run: processLumber }, // duplicate alias
 			],
 		});
 		console.log("  FAILED: expected error was not thrown");
 		return false;
 	} catch (err) {
 		const msg = (err as Error).message;
-		const passed = msg.includes('has duplicate step name "sharedName"');
+		const passed = msg.includes('has duplicate alias "sharedName"');
 		console.log(`  Error: ${msg}`);
 		console.log(`  ${passed ? "passed" : "FAILED"}`);
 		console.log("---\n");
