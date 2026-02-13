@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/coffeepy/rival/compare/v1.0.0...v1.1.0) (2026-02-13)
+
+
+### Features
+
+* **rival:** implement dual identity (id/alias) for steps and loops ([0f90af8](https://github.com/coffeepy/rival/commit/0f90af88536920daa1f37dc156e11ee8bab615fe))
+
 # 1.0.0 (2026-02-12)
 
 
