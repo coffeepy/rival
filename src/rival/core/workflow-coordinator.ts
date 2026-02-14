@@ -10,7 +10,13 @@ import type { ZodSchema } from "zod";
 import type { ErrorHandler } from "../types";
 import type { LoopContext, PlanNode, StepResult } from "../types";
 import { planSchema } from "../types";
-import { getLoopActorHandle, getParallelActorHandle, getStepActorHandle } from "./actor-handles";
+import {
+	getCoordinatorCallbackHandle,
+	getLoopActorHandle,
+	getParallelActorHandle,
+	getRivalClient,
+	getStepActorHandle,
+} from "./actor-handles";
 import { buildStepContext } from "./context-builder";
 import {
 	propagateLoopCancel,
@@ -85,21 +91,16 @@ export function createWorkflowCoordinator(
 
 	async function notifyParent(c: {
 		state: WorkflowCoordinatorState;
-		client: () => Record<string, unknown>;
+		client: () => unknown;
 	}) {
 		const parentRef = c.state.parentRef;
 		const parentKey = c.state.parentKey;
 		const parentCallbackName = c.state.parentCallbackName;
 		if (!parentRef || !parentKey || !parentCallbackName) return;
 
-		const parentType = c.client()[parentRef] as
-			| {
-					getOrCreate: (key: string) => {
-						onWorkflowFinished?: (...args: unknown[]) => Promise<void>;
-					};
-			  }
-			| undefined;
-		const callback = parentType?.getOrCreate(parentKey).onWorkflowFinished;
+		const rivalClient = getRivalClient(c.client());
+		const handle = getCoordinatorCallbackHandle(rivalClient, parentRef);
+		const callback = handle?.getOrCreate(parentKey).onWorkflowFinished;
 		if (!callback) return;
 
 		const terminal = terminalResultFromState(c.state);
@@ -311,8 +312,8 @@ export function createWorkflowCoordinator(
 				}
 
 				if (node.type === "step") {
-					const client = c.client() as Record<string, unknown>;
-					const handle = getStepActorHandle(client, node.actorRef);
+					const rivalClient = getRivalClient(c.client());
+					const handle = getStepActorHandle(rivalClient, node.actorRef);
 					if (!handle) {
 						c.state.stepResults[node.alias] = {
 							result: undefined,
@@ -352,8 +353,8 @@ export function createWorkflowCoordinator(
 				}
 
 				if (node.type === "loop") {
-					const client = c.client() as Record<string, unknown>;
-					const handle = getLoopActorHandle(client, node.loopCoordinatorActorRef);
+					const rivalClient = getRivalClient(c.client());
+					const handle = getLoopActorHandle(rivalClient, node.loopCoordinatorActorRef);
 					if (!handle) {
 						c.state.stepResults[node.alias] = {
 							result: undefined,
@@ -393,8 +394,8 @@ export function createWorkflowCoordinator(
 				}
 
 				if (node.type === "parallel") {
-					const client = c.client() as Record<string, unknown>;
-					const handle = getParallelActorHandle(client, node.parallelCoordinatorActorRef);
+					const rivalClient = getRivalClient(c.client());
+					const handle = getParallelActorHandle(rivalClient, node.parallelCoordinatorActorRef);
 					if (!handle) {
 						c.state.stepResults[node.alias] = {
 							result: undefined,
@@ -648,9 +649,9 @@ export function createWorkflowCoordinator(
 				c.state.activeParallelKey = null;
 				c.state.pendingParallelCallbackName = null;
 
-				const client = c.client() as Record<string, unknown>;
+				const rivalClient = getRivalClient(c.client());
 				await propagateStepCancel(
-					client,
+					rivalClient,
 					activeStepRef && activeStepKey ? [{ ref: activeStepRef, key: activeStepKey }] : [],
 					getStepActorHandle,
 					(_target, err) => {
@@ -661,7 +662,7 @@ export function createWorkflowCoordinator(
 					},
 				);
 				await propagateLoopCancel(
-					client,
+					rivalClient,
 					activeLoopRef && activeLoopKey ? [{ ref: activeLoopRef, key: activeLoopKey }] : [],
 					getLoopActorHandle,
 					(_target, err) => {
@@ -672,7 +673,7 @@ export function createWorkflowCoordinator(
 					},
 				);
 				await propagateParallelCancel(
-					client,
+					rivalClient,
 					activeParallelRef && activeParallelKey
 						? [{ ref: activeParallelRef, key: activeParallelKey }]
 						: [],

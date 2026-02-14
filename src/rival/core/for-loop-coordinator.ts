@@ -1,7 +1,13 @@
 import { actor } from "rivetkit";
 import type { LoopContext, LoopPlanNode, StepResult } from "../types";
 import type { ActiveActorAddress, RunningKickoffResult } from "./actor-handles";
-import { getLoopActorHandle, getParallelActorHandle, getStepActorHandle } from "./actor-handles";
+import {
+	getCoordinatorCallbackHandle,
+	getLoopActorHandle,
+	getParallelActorHandle,
+	getRivalClient,
+	getStepActorHandle,
+} from "./actor-handles";
 import { buildStepContext } from "./context-builder";
 import {
 	propagateLoopCancel,
@@ -71,21 +77,16 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 
 	async function notifyParent(c: {
 		state: LoopCoordinatorState;
-		client: () => Record<string, unknown>;
+		client: () => unknown;
 	}) {
 		const parentRef = c.state.parentRef;
 		const parentKey = c.state.parentKey;
 		const parentCallbackName = c.state.parentCallbackName;
 		if (!parentRef || !parentKey || !parentCallbackName) return;
 
-		const parentType = c.client()[parentRef] as
-			| {
-					getOrCreate: (key: string) => {
-						onLoopFinished?: (...args: unknown[]) => Promise<void>;
-					};
-			  }
-			| undefined;
-		const callback = parentType?.getOrCreate(parentKey).onLoopFinished;
+		const rivalClient = getRivalClient(c.client());
+		const handle = getCoordinatorCallbackHandle(rivalClient, parentRef);
+		const callback = handle?.getOrCreate(parentKey).onLoopFinished;
 		if (!callback) {
 			console.warn(
 				`[${node.alias}/${c.state.workflowId}] Parent callback not found: ${parentRef}/${parentKey}`,
@@ -129,7 +130,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 	async function finalizeLoop(
 		c: {
 			state: LoopCoordinatorState;
-			client: () => Record<string, unknown>;
+			client: () => unknown;
 		},
 		status: "completed" | "failed" | "cancelled",
 		error?: string,
@@ -232,8 +233,8 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 				c.state.activeChildLoops = {};
 				c.state.activeChildParallels = {};
 
-				const client = c.client() as Record<string, unknown>;
-				const iteratorHandle = getStepActorHandle(client, node.iteratorActorRef);
+				const rivalClient = getRivalClient(c.client());
+				const iteratorHandle = getStepActorHandle(rivalClient, node.iteratorActorRef);
 				if (!iteratorHandle) {
 					await finalizeLoop(
 						c,
@@ -321,8 +322,8 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 					};
 
 					if (currentNode.type === "step") {
-						const client = c.client() as Record<string, unknown>;
-						const stepHandle = getStepActorHandle(client, currentNode.actorRef);
+						const rivalClient = getRivalClient(c.client());
+						const stepHandle = getStepActorHandle(rivalClient, currentNode.actorRef);
 						if (!stepHandle) {
 							runtime.stepResults[currentNodeAlias] = toFailedStepResult();
 							completeIteration(
@@ -365,8 +366,11 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 					}
 
 					if (currentNode.type === "loop") {
-						const client = c.client() as Record<string, unknown>;
-						const childHandle = getLoopActorHandle(client, currentNode.loopCoordinatorActorRef);
+						const rivalClient = getRivalClient(c.client());
+						const childHandle = getLoopActorHandle(
+							rivalClient,
+							currentNode.loopCoordinatorActorRef,
+						);
 						if (!childHandle) {
 							runtime.stepResults[currentNodeAlias] = toFailedStepResult();
 							completeIteration(
@@ -410,9 +414,9 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 					}
 
 					if (currentNode.type === "parallel") {
-						const client = c.client() as Record<string, unknown>;
+						const rivalClient = getRivalClient(c.client());
 						const childHandle = getParallelActorHandle(
-							client,
+							rivalClient,
 							currentNode.parallelCoordinatorActorRef,
 						);
 						if (!childHandle) {
@@ -693,21 +697,26 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 				c.state.activeChildLoops = {};
 				c.state.activeChildParallels = {};
 
-				const client = c.client() as Record<string, unknown>;
-				await propagateStepCancel(client, activeSteps, getStepActorHandle, (_target, err) => {
+				const rivalClient = getRivalClient(c.client());
+				await propagateStepCancel(rivalClient, activeSteps, getStepActorHandle, (_target, err) => {
 					console.warn(
 						`[${node.alias}/${c.state.workflowId}] Cancel propagation to step failed:`,
 						err,
 					);
 				});
-				await propagateLoopCancel(client, activeChildLoops, getLoopActorHandle, (_target, err) => {
-					console.warn(
-						`[${node.alias}/${c.state.workflowId}] Cancel propagation to loop failed:`,
-						err,
-					);
-				});
+				await propagateLoopCancel(
+					rivalClient,
+					activeChildLoops,
+					getLoopActorHandle,
+					(_target, err) => {
+						console.warn(
+							`[${node.alias}/${c.state.workflowId}] Cancel propagation to loop failed:`,
+							err,
+						);
+					},
+				);
 				await propagateParallelCancel(
-					client,
+					rivalClient,
 					activeChildParallels,
 					getParallelActorHandle,
 					(_target, err) => {

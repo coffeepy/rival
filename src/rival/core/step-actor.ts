@@ -16,6 +16,7 @@ import type {
 	StepState,
 } from "../types";
 import { StepError } from "../types";
+import { getCoordinatorCallbackHandle, getRivalClient } from "./actor-handles";
 
 /**
  * Step actor state.
@@ -107,19 +108,16 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 
 	async function notifyCoordinator(c: {
 		state: StepActorState;
-		client: () => Record<string, unknown>;
+		client: () => unknown;
 	}) {
 		const coordinatorRef = c.state.coordinatorRef;
 		const coordinatorKey = c.state.coordinatorKey;
 		const coordinatorToken = c.state.coordinatorToken;
 		if (!coordinatorRef || !coordinatorKey || coordinatorToken === null) return;
 
-		const coordinatorType = c.client()[coordinatorRef] as
-			| {
-					getOrCreate: (key: string) => { onStepFinished?: (...args: unknown[]) => Promise<void> };
-			  }
-			| undefined;
-		const callback = coordinatorType?.getOrCreate(coordinatorKey).onStepFinished;
+		const rivalClient = getRivalClient(c.client());
+		const handle = getCoordinatorCallbackHandle(rivalClient, coordinatorRef);
+		const callback = handle?.getOrCreate(coordinatorKey).onStepFinished;
 		if (!callback) return;
 
 		await callback(
@@ -146,7 +144,7 @@ export function createStepActor<TInput = unknown, TResult = unknown>(
 	}
 
 	async function finalize(
-		c: { state: StepActorState; client: () => Record<string, unknown> },
+		c: { state: StepActorState; client: () => unknown },
 		next: {
 			status: StepActorState["status"];
 			result?: unknown;

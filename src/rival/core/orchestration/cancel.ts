@@ -1,6 +1,7 @@
 import type {
 	LoopActorHandle,
 	ParallelActorHandle,
+	RivalClient,
 	StepActorHandle,
 	WorkflowActorHandle,
 } from "../actor-handles";
@@ -11,9 +12,9 @@ export interface CancelTarget {
 }
 
 interface CancelPropagationOptions<THandle> {
-	client: Record<string, unknown>;
+	client: RivalClient;
 	targets: CancelTarget[];
-	getHandle: (client: Record<string, unknown>, ref: string) => THandle | undefined;
+	getHandle: (client: RivalClient, ref: string) => THandle | undefined;
 	cancelActor: (handle: THandle, key: string) => Promise<void>;
 	onError: (target: CancelTarget, err: unknown) => void;
 }
@@ -30,9 +31,9 @@ async function propagateCancel<THandle>(options: CancelPropagationOptions<THandl
 }
 
 export async function propagateStepCancel(
-	client: Record<string, unknown>,
+	client: RivalClient,
 	targets: CancelTarget[],
-	getHandle: (client: Record<string, unknown>, ref: string) => StepActorHandle | undefined,
+	getHandle: (client: RivalClient, ref: string) => StepActorHandle | undefined,
 	onError: (target: CancelTarget, err: unknown) => void,
 ): Promise<void> {
 	await propagateCancel({
@@ -45,9 +46,9 @@ export async function propagateStepCancel(
 }
 
 export async function propagateLoopCancel(
-	client: Record<string, unknown>,
+	client: RivalClient,
 	targets: CancelTarget[],
-	getHandle: (client: Record<string, unknown>, ref: string) => LoopActorHandle | undefined,
+	getHandle: (client: RivalClient, ref: string) => LoopActorHandle | undefined,
 	onError: (target: CancelTarget, err: unknown) => void,
 ): Promise<void> {
 	await propagateCancel({
@@ -60,9 +61,9 @@ export async function propagateLoopCancel(
 }
 
 export async function propagateParallelCancel(
-	client: Record<string, unknown>,
+	client: RivalClient,
 	targets: CancelTarget[],
-	getHandle: (client: Record<string, unknown>, ref: string) => ParallelActorHandle | undefined,
+	getHandle: (client: RivalClient, ref: string) => ParallelActorHandle | undefined,
 	onError: (target: CancelTarget, err: unknown) => void,
 ): Promise<void> {
 	await propagateCancel({
@@ -75,9 +76,9 @@ export async function propagateParallelCancel(
 }
 
 export async function propagateWorkflowCancel(
-	client: Record<string, unknown>,
+	client: RivalClient,
 	targets: CancelTarget[],
-	getHandle: (client: Record<string, unknown>, ref: string) => WorkflowActorHandle | undefined,
+	getHandle: (client: RivalClient, ref: string) => WorkflowActorHandle | undefined,
 	onError: (target: CancelTarget, err: unknown) => void,
 ): Promise<void> {
 	await propagateCancel({
