@@ -133,3 +133,38 @@ export interface ForEachDefinition {
 	/** Max in-flight iterations when running in parallel mode */
 	concurrency?: number;
 }
+
+/**
+ * Concurrent definition.
+ *
+ * `steps` accepts step functions or object entries with `run`, and each run
+ * can be either a StepFunction or a nested WorkflowDefinition.
+ */
+export interface ConcurrentStepDefinition {
+	/** Internal unique node ID used for runtime correlation */
+	id: string;
+	/** User-facing key used in concurrent result maps */
+	alias: string;
+	/** Optional display label for logs/UI */
+	name?: string;
+	/** Step body: single function or nested workflow */
+	run: StepFunction | WorkflowDefinition;
+	/** Optional step configuration (applies to function runs) */
+	config?: StepConfig;
+}
+
+export interface ConcurrentDefinition {
+	type: "concurrent";
+	/** Internal unique node ID used for runtime correlation */
+	id: string;
+	/** User-facing key used in context.steps and workflow results */
+	alias: string;
+	/** Optional display label for logs/UI */
+	name?: string;
+	/** Steps to run concurrently */
+	steps: ConcurrentStepDefinition[];
+	/** Continue policy for advancing parent execution. */
+	continueOn?: "all" | "detached";
+	/** Failure aggregation mode for child hard failures. */
+	onFailure?: "fail" | "collect";
+}

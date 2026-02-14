@@ -24,6 +24,8 @@ export type {
 	StepMetrics,
 	StepDefinition,
 	ForEachDefinition,
+	ConcurrentStepDefinition,
+	ConcurrentDefinition,
 	ErrorHandler,
 } from "./step";
 
