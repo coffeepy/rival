@@ -68,9 +68,9 @@ Then `rival(...)` bootstraps a local runtime and exposes a simple API:
 
 2. `src/rival/core/workflow-coordinator.ts`
 - Workflow orchestration state machine.
-- Callback handling (`onStepFinished`, `onLoopFinished`).
+- Callback handling (`onStepFinished`, `onLoopFinished`, `onParallelFinished`).
 - Top-level plan progression + terminal ownership.
-- Delegates all loop nodes to loop coordinators.
+- Delegates loop nodes to loop coordinators and concurrent nodes to parallel coordinators.
 - Terminal status handling and broadcasts.
 
 3. `src/rival/core/for-loop-coordinator.ts`
@@ -78,12 +78,17 @@ Then `rival(...)` bootstraps a local runtime and exposes a simple API:
 - Handles iterator execution, seq/par iteration progression, nested loop delegation.
 - Tracks per-iteration runtime and loop-local cancellation fan-out.
 
-4. `src/rival/core/step-actor.ts`
+4. `src/rival/core/parallel-coordinator.ts`
+- Dedicated concurrent-block orchestration actor.
+- Handles fan-out/fan-in for `concurrent(...)` nodes.
+- Tracks child statuses and reports aggregate result to parent coordinator.
+
+5. `src/rival/core/step-actor.ts`
 - Step execution actor.
 - Retry/backoff/timeouts via scheduler.
 - Callback to parent coordinator with token guard.
 
-5. `src/rival/core/context-builder.ts`
+6. `src/rival/core/context-builder.ts`
 - Builds the step context object passed to step functions.
 
 ### Types
@@ -112,8 +117,10 @@ Then `rival(...)` bootstraps a local runtime and exposes a simple API:
 
 1. Top-level step progression
 2. Top-level loop progression via `ForLoopCoordinator`
-3. Nested loop progression via parent loop coordinator -> child loop coordinator
-4. Step retry/timeout completion callbacks
+3. Top-level concurrent progression via `ParallelCoordinator`
+4. Nested loop progression via parent loop coordinator -> child loop coordinator
+5. Concurrent inside loop via loop coordinator -> parallel coordinator
+6. Step retry/timeout completion callbacks
 
 No known blocking nested-loop orchestration path remains in coordinator actors.
 

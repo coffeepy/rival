@@ -71,9 +71,46 @@ Fluent builder for defining workflows.
 ```typescript
 const workflow = createWorkflow("processOrder")
   .input(z.object({ orderId: z.string() }))   // optional Zod input validation
+  .description("Process a customer order")      // optional description
   .step(validateOrder)
   .step({ run: processPayment, timeout: 30000, maxAttempts: 3 })
   .step(sendConfirmation)
+  .build();
+```
+
+### `createWorkflow(name).forEach(config)`
+
+Add a forEach loop to iterate over items.
+
+```typescript
+const workflow = createWorkflow("processItems")
+  .forEach({
+    items: ({ input }) => input.items,       // returns array to iterate
+    run: processItem,                        // step function for each item
+    parallel: true,                          // run iterations concurrently
+    concurrency: 5,                          // max in-flight iterations
+  })
+  .build();
+```
+
+### `createWorkflow(name).concurrent(config)`
+
+Run multiple child steps/workflows concurrently and join results into one step result.
+
+```typescript
+const workflow = createWorkflow("setupUser")
+  .concurrent({
+    alias: "setup",
+    onFailure: "collect", // "fail" (default) | "collect"
+    steps: [
+      { alias: "db", run: createDbUser },
+      { alias: "crm", run: createCrmProfile },
+    ],
+  })
+  .step(({ steps }) => {
+    const setup = steps.setup?.result as Record<string, { status: string; result: unknown }>;
+    return { db: setup.db?.status, crm: setup.crm?.status };
+  })
   .build();
 ```
 
@@ -91,7 +128,7 @@ const engine = rival(compiled);
 Every step receives a `StepContext`:
 
 ```typescript
-function myStep({ input, state, steps, lastStep, log }: StepContext) {
+function myStep({ input, state, steps, lastStep, log, loop }: StepContext) {
   log.info("Running step");
 
   // Access workflow input
@@ -103,9 +140,32 @@ function myStep({ input, state, steps, lastStep, log }: StepContext) {
   // Set step state (persisted)
   state.description = "Processing user";
 
+  // Access loop context (when inside forEach)
+  if (loop) {
+    console.log(`Processing item ${loop.index}:`, loop.item);
+  }
+
   // Return result (passed to next step)
   return { processed: true };
 }
+```
+
+### Step Configuration
+
+Steps can be configured with additional options:
+
+```typescript
+createWorkflow("configurable")
+  .step({
+    run: myStep,
+    timeout: 30000,           // timeout in ms
+    maxAttempts: 3,           // retry attempts
+    backoff: "exponential",    // or "linear"
+    onTimeout: "retry",       // "stop" or "retry" on timeout
+    actor: { options: { actionTimeout: 35000 } },  // Rivet actor escape hatch
+    onError: (ctx) => { console.error(ctx.error); }
+  })
+  .build();
 ```
 
 ### Predefined Steps
@@ -157,7 +217,19 @@ Test suites:
 - `test/builder-compiler.test.ts` -- Builder API, compiler, defineWorkflow
 - `test/predefined-steps.test.ts` -- httpStep, delayStep
 - `test/engine.test.ts` -- `rival()` API, RivalEngine
+- `test/foreach-loop.test.ts` -- forEach loops, parallel iterations, nesting
+- `test/concurrent-block.test.ts` -- Concurrent blocks (`concurrent`) and failure modes
+- `test/step-actor-scheduling.test.ts` -- Scheduled retry/timeout behavior
+- `test/timeout-actor-options.test.ts` -- Timeout/action options integration
 
 ## License
 
 MIT
+
+## Current Limitations
+
+Rival is actively developed. See `ROADMAP.md` for a detailed list of planned features not yet implemented, including:
+- Branching (if/else)
+- Subworkflow calls
+- Checkpoints & recovery
+- Human-in-the-loop tasks
