@@ -14,6 +14,8 @@
 
 import { createFileSystemDriver, setup } from "rivetkit";
 import { compileWorkflow } from "./builder/compiler";
+import type { RivalClient } from "./core/actor-handles";
+import { getWorkflowActorHandle } from "./core/actor-handles";
 import type {
 	WorkflowCoordinatorState,
 	WorkflowExecutionResult,
@@ -111,11 +113,14 @@ export class RivalEngine {
 	private static readonly WAIT_POLL_INTERVAL_MS = 250;
 	private static readonly WAIT_EVENT_TIMEOUT_MS = 3_000;
 
-	private client: Record<string, unknown>;
+	private rivalClient: RivalClient;
 	private compiledWorkflows: Map<string, CompiledWorkflow>;
 
 	constructor(client: Record<string, unknown>, compiledWorkflows: Map<string, CompiledWorkflow>) {
-		this.client = client;
+		this.rivalClient = {
+			__brand: "RivalClient" as const,
+			_raw: client,
+		};
 		this.compiledWorkflows = compiledWorkflows;
 	}
 
@@ -171,13 +176,11 @@ export class RivalEngine {
 
 	private getRawCoordinatorHandle(workflowName: string): RawCoordinatorHandle {
 		const compiled = this.getCompiledWorkflow(workflowName);
-		const coordinatorType = this.client[compiled.coordinatorActorRef] as
-			| RawCoordinatorHandle
-			| undefined;
-		if (!coordinatorType) {
+		const handle = getWorkflowActorHandle(this.rivalClient, compiled.coordinatorActorRef);
+		if (!handle) {
 			throw new Error(`Coordinator "${compiled.coordinatorActorRef}" not found in runtime`);
 		}
-		return coordinatorType;
+		return handle as unknown as RawCoordinatorHandle;
 	}
 
 	private getRawCoordinatorInstance(workflowName: string, runId: string) {

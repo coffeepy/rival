@@ -2,8 +2,10 @@ import { actor } from "rivetkit";
 import type { LoopContext, ParallelPlanNode, StepResult } from "../types";
 import type { ActiveActorAddress, RunningKickoffResult, WorkflowRunResult } from "./actor-handles";
 import {
+	getCoordinatorCallbackHandle,
 	getLoopActorHandle,
 	getParallelActorHandle,
+	getRivalClient,
 	getStepActorHandle,
 	getWorkflowActorHandle,
 } from "./actor-handles";
@@ -66,21 +68,16 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 
 	async function notifyParent(c: {
 		state: ParallelCoordinatorState;
-		client: () => Record<string, unknown>;
+		client: () => unknown;
 	}) {
 		const parentRef = c.state.parentRef;
 		const parentKey = c.state.parentKey;
 		const parentCallbackName = c.state.parentCallbackName;
 		if (!parentRef || !parentKey || !parentCallbackName) return;
 
-		const parentType = c.client()[parentRef] as
-			| {
-					getOrCreate: (key: string) => {
-						onParallelFinished?: (...args: unknown[]) => Promise<void>;
-					};
-			  }
-			| undefined;
-		const callback = parentType?.getOrCreate(parentKey).onParallelFinished;
+		const rivalClient = getRivalClient(c.client());
+		const handle = getCoordinatorCallbackHandle(rivalClient, parentRef);
+		const callback = handle?.getOrCreate(parentKey).onParallelFinished;
 		if (!callback) return;
 		await callback(
 			parentCallbackName,
@@ -106,7 +103,7 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 	async function finalize(
 		c: {
 			state: ParallelCoordinatorState;
-			client: () => Record<string, unknown>;
+			client: () => unknown;
 		},
 		status: "completed" | "failed" | "cancelled",
 		error?: string,
@@ -230,11 +227,11 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 
 					const childAlias = child.alias;
 					const childId = child.id;
-					const client = c.client() as Record<string, unknown>;
+					const rivalClient = getRivalClient(c.client());
 					const callbackBase = `${node.id}:${node.alias}:${childId}:${childAlias}:${token}`;
 
 					if (child.type === "step") {
-						const stepHandle = getStepActorHandle(client, child.actorRef);
+						const stepHandle = getStepActorHandle(rivalClient, child.actorRef);
 						if (!stepHandle) {
 							c.state.results[childAlias] = toFailedStepResult();
 							recordHardFailure(c, `Actor ref "${child.actorRef}" not found in registry`);
@@ -271,7 +268,7 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 					}
 
 					if (child.type === "loop") {
-						const loopHandle = getLoopActorHandle(client, child.loopCoordinatorActorRef);
+						const loopHandle = getLoopActorHandle(rivalClient, child.loopCoordinatorActorRef);
 						if (!loopHandle) {
 							c.state.results[childAlias] = toFailedStepResult();
 							recordHardFailure(
@@ -311,7 +308,7 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 
 					if (child.type === "parallel") {
 						const parallelHandle = getParallelActorHandle(
-							client,
+							rivalClient,
 							child.parallelCoordinatorActorRef,
 						);
 						if (!parallelHandle) {
@@ -368,7 +365,7 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 					}
 
 					if (child.type === "workflow") {
-						const workflowHandle = getWorkflowActorHandle(client, child.coordinatorActorRef);
+						const workflowHandle = getWorkflowActorHandle(rivalClient, child.coordinatorActorRef);
 						if (!workflowHandle) {
 							c.state.results[childAlias] = toFailedStepResult();
 							recordHardFailure(
@@ -554,21 +551,21 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 				c.state.activeChildWorkflows = {};
 				c.state.inFlight = {};
 
-				const client = c.client() as Record<string, unknown>;
-				await propagateStepCancel(client, activeSteps, getStepActorHandle, (_target, err) => {
+				const rivalClient = getRivalClient(c.client());
+				await propagateStepCancel(rivalClient, activeSteps, getStepActorHandle, (_target, err) => {
 					console.warn(
 						`[${node.alias}/${c.state.workflowId}] Cancel propagation to step failed:`,
 						err,
 					);
 				});
-				await propagateLoopCancel(client, activeLoops, getLoopActorHandle, (_target, err) => {
+				await propagateLoopCancel(rivalClient, activeLoops, getLoopActorHandle, (_target, err) => {
 					console.warn(
 						`[${node.alias}/${c.state.workflowId}] Cancel propagation to loop failed:`,
 						err,
 					);
 				});
 				await propagateParallelCancel(
-					client,
+					rivalClient,
 					activeParallels,
 					getParallelActorHandle,
 					(_target, err) => {
@@ -579,7 +576,7 @@ export function createParallelCoordinator(_workflowName: string, node: ParallelP
 					},
 				);
 				await propagateWorkflowCancel(
-					client,
+					rivalClient,
 					activeWorkflows,
 					getWorkflowActorHandle,
 					(_target, err) => {
