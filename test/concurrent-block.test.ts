@@ -321,6 +321,6 @@ describe("concurrent blocks", () => {
 				setTimeout(() => reject(new Error("timeout waiting for failure")), 2000),
 			),
 		]);
-		expect(result.status).toBe("failed");
+		expect((result as { status: string }).status).toBe("failed");
 	});
 });
