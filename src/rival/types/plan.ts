@@ -71,15 +71,23 @@ export interface LoopPlanNode {
 
 /**
  * A parallel execution node in the plan.
- * Future phase - not implemented in Phase 1.
+ * Runtime execution is coordinated by parallel-coordinator actors.
  */
 export interface ParallelPlanNode {
 	type: "parallel";
+	/** Internal unique node ID used for runtime correlation */
 	id: string;
+	/** User-facing key used in context.steps and workflow results */
 	alias: string;
 	name?: string;
+	/** Continue policy for advancing parent execution. */
+	continueOn?: "all" | "detached";
+	/** Failure aggregation mode for child hard failures. */
+	onFailure?: "fail" | "collect";
+	/** Actor ref for the parallel coordinator actor */
+	parallelCoordinatorActorRef: string;
 	/** Nodes to execute concurrently */
-	children: PlanNode[];
+	steps: PlanNode[];
 }
 
 /**
@@ -147,7 +155,10 @@ const planNodeSchema = z.discriminatedUnion("type", [
 		id: z.string().min(1),
 		alias: z.string().min(1),
 		name: z.string().min(1).optional(),
-		children: z.array(z.any()),
+		continueOn: z.enum(["all", "detached"]).optional(),
+		onFailure: z.enum(["fail", "collect"]).optional(),
+		parallelCoordinatorActorRef: z.string().min(1),
+		steps: z.array(z.any()),
 	}),
 	z.object({
 		type: z.literal("workflow"),
@@ -168,11 +179,17 @@ export const planSchema = z.array(planNodeSchema).superRefine((nodes, ctx) => {
 	const seenAliases = new Set<string>();
 	for (let i = 0; i < nodes.length; i++) {
 		const node = nodes[i];
-		if (node.type === "step" || node.type === "loop" || node.type === "branch") {
+		if (
+			node.type === "step" ||
+			node.type === "loop" ||
+			node.type === "branch" ||
+			node.type === "parallel" ||
+			node.type === "workflow"
+		) {
 			if (seenIds.has(node.id)) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
-					message: `Duplicate node id "${node.id}". Step, loop, and branch ids must be unique.`,
+					message: `Duplicate node id "${node.id}". Node ids must be unique.`,
 					path: [i, "id"],
 				});
 			}
@@ -181,7 +198,7 @@ export const planSchema = z.array(planNodeSchema).superRefine((nodes, ctx) => {
 			if (seenAliases.has(node.alias)) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
-					message: `Duplicate alias "${node.alias}". Step, loop, and branch aliases must be unique.`,
+					message: `Duplicate alias "${node.alias}". Node aliases must be unique.`,
 					path: [i, "alias"],
 				});
 			}

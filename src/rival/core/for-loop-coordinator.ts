@@ -1,11 +1,17 @@
 import { actor } from "rivetkit";
 import type { LoopContext, LoopPlanNode, StepResult } from "../types";
+import type { ActiveActorAddress, RunningKickoffResult } from "./actor-handles";
+import { getLoopActorHandle, getParallelActorHandle, getStepActorHandle } from "./actor-handles";
 import { buildStepContext } from "./context-builder";
-import type { ExecuteContext, StepExecutionKickoffResult } from "./step-actor";
+import {
+	propagateLoopCancel,
+	propagateParallelCancel,
+	propagateStepCancel,
+} from "./orchestration/cancel";
+import { isHardChildStatus, isHardStepStatus, terminalError } from "./orchestration/policy";
+import { nextExecutionToken } from "./orchestration/tokens";
 
-export interface LoopExecutionKickoffResult {
-	status: "running";
-}
+export type LoopExecutionKickoffResult = RunningKickoffResult;
 
 export interface LoopCoordinatorState {
 	status: "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -37,6 +43,7 @@ export interface LoopCoordinatorState {
 	firstHardFailureError: string | null;
 	activeStepActors: Record<string, ActiveActorAddress>;
 	activeChildLoops: Record<string, ActiveActorAddress>;
+	activeChildParallels: Record<string, ActiveActorAddress>;
 }
 
 interface IterationResult {
@@ -49,61 +56,9 @@ interface IterationRuntime {
 	index: number;
 	nodeIndex: number;
 	stepResults: Record<string, StepResult>;
-	pendingType: "step" | "loop" | null;
+	pendingType: "step" | "loop" | "parallel" | null;
 	pendingCallbackName: string | null;
 	pendingNodeName: string | null;
-}
-
-interface ActiveActorAddress {
-	ref: string;
-	key: string;
-}
-
-type StepActorHandle = {
-	getOrCreate: (key: string) => {
-		execute: (
-			ctx: ExecuteContext,
-			config?: unknown,
-			wfId?: string,
-			stepName?: string,
-			coordinatorRef?: string,
-			coordinatorKey?: string,
-			coordinatorToken?: number,
-		) => Promise<StepExecutionKickoffResult>;
-		cancel: () => Promise<void>;
-	};
-};
-
-type LoopActorHandle = {
-	getOrCreate: (key: string) => {
-		runLoop: (
-			selfKey: string,
-			workflowId: string,
-			input: unknown,
-			parentStepResults: Record<string, StepResult>,
-			parentLoopContext: LoopContext | undefined,
-			loopKeyPrefix: string,
-			parentRef: string,
-			parentKey: string,
-			parentCallbackName: string,
-			parentToken: number,
-		) => Promise<LoopExecutionKickoffResult>;
-		cancel: () => Promise<void>;
-	};
-};
-
-function getStepActorHandle(
-	client: Record<string, unknown>,
-	actorRef: string,
-): StepActorHandle | undefined {
-	return client[actorRef] as StepActorHandle | undefined;
-}
-
-function getLoopActorHandle(
-	client: Record<string, unknown>,
-	actorRef: string,
-): LoopActorHandle | undefined {
-	return client[actorRef] as LoopActorHandle | undefined;
 }
 
 function toFailedStepResult(): StepResult {
@@ -186,6 +141,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 		c.state.iteratorCallbackName = null;
 		c.state.activeStepActors = {};
 		c.state.activeChildLoops = {};
+		c.state.activeChildParallels = {};
 
 		const iterations = [...c.state.iterations].sort((a, b) => a.index - b.index);
 		c.state.loopResult = {
@@ -228,6 +184,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 			firstHardFailureError: null as string | null,
 			activeStepActors: {} as Record<string, ActiveActorAddress>,
 			activeChildLoops: {} as Record<string, ActiveActorAddress>,
+			activeChildParallels: {} as Record<string, ActiveActorAddress>,
 		},
 		actions: {
 			runLoop: async (
@@ -243,7 +200,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 				parentCallbackName: string,
 				parentToken: number,
 			): Promise<LoopExecutionKickoffResult> => {
-				const token = Number.isFinite(c.state.executionToken) ? c.state.executionToken + 1 : 1;
+				const token = nextExecutionToken(c.state.executionToken);
 				c.state.status = "running";
 				c.state.selfKey = selfKey;
 				c.state.workflowId = workflowId;
@@ -273,6 +230,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 				c.state.firstHardFailureError = null;
 				c.state.activeStepActors = {};
 				c.state.activeChildLoops = {};
+				c.state.activeChildParallels = {};
 
 				const client = c.client() as Record<string, unknown>;
 				const iteratorHandle = getStepActorHandle(client, node.iteratorActorRef);
@@ -451,6 +409,70 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						continue;
 					}
 
+					if (currentNode.type === "parallel") {
+						const client = c.client() as Record<string, unknown>;
+						const childHandle = getParallelActorHandle(
+							client,
+							currentNode.parallelCoordinatorActorRef,
+						);
+						if (!childHandle) {
+							runtime.stepResults[currentNodeAlias] = toFailedStepResult();
+							completeIteration(
+								c,
+								runtime,
+								true,
+								`Parallel coordinator ref "${currentNode.parallelCoordinatorActorRef}" not found in registry`,
+							);
+							progressed = true;
+							continue;
+						}
+
+						const childKey = `${c.state.workflowId}-${c.state.loopKeyPrefix}iter${runtime.index}-${currentNodeId}-${currentNodeAlias}-parallel`;
+						const callbackName = `${node.id}:${node.alias}:iter${runtime.index}:node${runtime.nodeIndex}:${currentNodeId}:${currentNodeAlias}:parallel:${token}`;
+						const childParallel = childHandle.getOrCreate(childKey);
+
+						if (currentNode.continueOn === "detached") {
+							await childParallel.runParallel(
+								childKey,
+								c.state.workflowId,
+								c.state.input,
+								mergedStepResults,
+								loopContext,
+							);
+							runtime.stepResults[currentNodeAlias] = {
+								result: { detached: true, key: childKey },
+								state: { detached: true },
+								status: "completed",
+							};
+							runtime.nodeIndex += 1;
+							c.state.inFlight[String(idx)] = runtime;
+						} else {
+							runtime.pendingType = "parallel";
+							runtime.pendingCallbackName = callbackName;
+							runtime.pendingNodeName = currentNodeAlias;
+							c.state.inFlight[String(idx)] = runtime;
+							c.state.activeChildParallels[callbackName] = {
+								ref: currentNode.parallelCoordinatorActorRef,
+								key: childKey,
+							};
+
+							await childParallel.runParallel(
+								childKey,
+								c.state.workflowId,
+								c.state.input,
+								mergedStepResults,
+								loopContext,
+								c.name,
+								c.state.selfKey,
+								callbackName,
+								token,
+							);
+						}
+						dispatched += 1;
+						progressed = true;
+						continue;
+					}
+
 					runtime.stepResults[currentNodeAlias] = toFailedStepResult();
 					completeIteration(c, runtime, true, `Unsupported node type "${currentNode.type}"`);
 					progressed = true;
@@ -515,8 +537,12 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 					c.state.iteratorPending = false;
 					c.state.iteratorCallbackName = null;
 
-					if (status === "failed") {
-						await finalizeLoop(c, "failed", error ?? "Iterator failed");
+					if (isHardStepStatus(status)) {
+						await finalizeLoop(
+							c,
+							"failed",
+							error ?? terminalError(status, "Iterator failed", "Iterator cancelled"),
+						);
 						return;
 					}
 					if (!Array.isArray(result)) {
@@ -543,13 +569,18 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 						status,
 					};
 
-					const hardFailed = status === "failed" && !continueOnError;
+					const hardFailed = isHardStepStatus(status, continueOnError);
 					runtime.pendingType = null;
 					runtime.pendingCallbackName = null;
 					runtime.pendingNodeName = null;
 
 					if (hardFailed) {
-						completeIteration(c, runtime, true, error ?? "Step failed");
+						completeIteration(
+							c,
+							runtime,
+							true,
+							error ?? terminalError(status, "Step failed", "Step cancelled"),
+						);
 					} else {
 						runtime.nodeIndex += 1;
 						c.state.inFlight[idxKey] = runtime;
@@ -579,14 +610,63 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 					runtime.stepResults[runtime.pendingNodeName ?? "unknown"] =
 						loopResult ?? toFailedStepResult();
 
-					const hardFailed = status === "failed";
+					const hardFailed = isHardChildStatus(status);
 					runtime.pendingType = null;
 					runtime.pendingCallbackName = null;
 					runtime.pendingNodeName = null;
 
 					if (hardFailed) {
-						completeIteration(c, runtime, true, error ?? "Nested loop failed");
+						completeIteration(
+							c,
+							runtime,
+							true,
+							error ?? terminalError(status, "Nested loop failed", "Nested loop cancelled"),
+						);
 					} else {
+						runtime.nodeIndex += 1;
+						c.state.inFlight[idxKey] = runtime;
+					}
+
+					await c.schedule.after(0, "_continue", c.state.executionToken);
+					return;
+				}
+			},
+
+			onParallelFinished: async (
+				c,
+				callbackName: string,
+				status: "completed" | "failed" | "cancelled",
+				parallelResult: StepResult | null,
+				error: string | null | undefined,
+				parentToken: number,
+			): Promise<void> => {
+				if (c.state.status !== "running") return;
+				if (parentToken !== c.state.executionToken) return;
+
+				for (const [idxKey, runtime] of Object.entries(c.state.inFlight)) {
+					if (runtime.pendingType !== "parallel" || runtime.pendingCallbackName !== callbackName)
+						continue;
+
+					delete c.state.activeChildParallels[callbackName];
+					runtime.stepResults[runtime.pendingNodeName ?? "unknown"] =
+						parallelResult ?? toFailedStepResult();
+
+					const hardFailed = isHardChildStatus(status);
+					runtime.pendingType = null;
+					runtime.pendingCallbackName = null;
+					runtime.pendingNodeName = null;
+
+					if (hardFailed) {
+						// Nested concurrent failed hard: this iteration terminates now.
+						completeIteration(
+							c,
+							runtime,
+							true,
+							error ??
+								terminalError(status, "Nested concurrent failed", "Nested concurrent cancelled"),
+						);
+					} else {
+						// Nested concurrent finished: advance this iteration to its next body node.
 						runtime.nodeIndex += 1;
 						c.state.inFlight[idxKey] = runtime;
 					}
@@ -601,44 +681,42 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 
 				c.state.status = "cancelled";
 				c.state.completedAt = Date.now();
-				c.state.executionToken += 1;
+				c.state.executionToken = nextExecutionToken(c.state.executionToken);
 
 				const activeSteps = Object.values(c.state.activeStepActors);
 				const activeChildLoops = Object.values(c.state.activeChildLoops);
+				const activeChildParallels = Object.values(c.state.activeChildParallels);
 
 				c.state.iteratorPending = false;
 				c.state.iteratorCallbackName = null;
 				c.state.activeStepActors = {};
 				c.state.activeChildLoops = {};
+				c.state.activeChildParallels = {};
 
 				const client = c.client() as Record<string, unknown>;
-				for (const active of activeSteps) {
-					try {
-						const handle = getStepActorHandle(client, active.ref);
-						if (handle) {
-							await handle.getOrCreate(active.key).cancel();
-						}
-					} catch (err) {
+				await propagateStepCancel(client, activeSteps, getStepActorHandle, (_target, err) => {
+					console.warn(
+						`[${node.alias}/${c.state.workflowId}] Cancel propagation to step failed:`,
+						err,
+					);
+				});
+				await propagateLoopCancel(client, activeChildLoops, getLoopActorHandle, (_target, err) => {
+					console.warn(
+						`[${node.alias}/${c.state.workflowId}] Cancel propagation to loop failed:`,
+						err,
+					);
+				});
+				await propagateParallelCancel(
+					client,
+					activeChildParallels,
+					getParallelActorHandle,
+					(_target, err) => {
 						console.warn(
-							`[${node.alias}/${c.state.workflowId}] Cancel propagation to step failed:`,
+							`[${node.alias}/${c.state.workflowId}] Cancel propagation to concurrent failed:`,
 							err,
 						);
-					}
-				}
-
-				for (const active of activeChildLoops) {
-					try {
-						const handle = getLoopActorHandle(client, active.ref);
-						if (handle) {
-							await handle.getOrCreate(active.key).cancel();
-						}
-					} catch (err) {
-						console.warn(
-							`[${node.alias}/${c.state.workflowId}] Cancel propagation to loop failed:`,
-							err,
-						);
-					}
-				}
+					},
+				);
 
 				await finalizeLoop(c, "cancelled", "Loop cancelled");
 			},
@@ -673,6 +751,7 @@ export function createForLoopCoordinator(_workflowName: string, node: LoopPlanNo
 				firstHardFailureError: c.state.firstHardFailureError,
 				activeStepActors: c.state.activeStepActors,
 				activeChildLoops: c.state.activeChildLoops,
+				activeChildParallels: c.state.activeChildParallels,
 				duration:
 					c.state.completedAt && c.state.startedAt ? c.state.completedAt - c.state.startedAt : null,
 			}),

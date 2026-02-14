@@ -69,6 +69,8 @@ export type {
 	StepMetrics,
 	StepDefinition,
 	ForEachDefinition,
+	ConcurrentStepDefinition,
+	ConcurrentDefinition,
 	ErrorHandler,
 	// Plan types
 	PlanNode,
@@ -92,7 +94,12 @@ export { planSchema, stepPlanNodeSchema } from "./types";
 
 // Builder API
 export { createWorkflow, WorkflowBuilder } from "./builder/workflow-builder";
-export type { StepInput, ForEachInput } from "./builder/workflow-builder";
+export type {
+	StepInput,
+	ForEachInput,
+	ConcurrentStepInput,
+	ConcurrentInput,
+} from "./builder/workflow-builder";
 
 // Compiler
 export { compileWorkflow, defineWorkflow } from "./builder/compiler";

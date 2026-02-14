@@ -17,6 +17,8 @@
 
 import type { ZodSchema } from "zod";
 import type {
+	ConcurrentDefinition,
+	ConcurrentStepDefinition,
 	ErrorHandler,
 	ForEachDefinition,
 	StepActorConfig,
@@ -25,6 +27,10 @@ import type {
 	StepFunction,
 } from "../types";
 import type { WorkflowDefinition } from "../types";
+import {
+	validateConcurrentConfig,
+	validateConcurrentWorkflowChildConfig,
+} from "./concurrent-validation";
 import { validateForEachConcurrency } from "./for-each-validation";
 
 /**
@@ -63,15 +69,43 @@ export interface ForEachInput {
 }
 
 /**
+ * Input for the concurrent builder method.
+ */
+export type ConcurrentStepInput =
+	| StepFunction
+	| {
+			id?: string;
+			alias?: string;
+			name?: string;
+			run: StepFunction | WorkflowDefinition;
+			timeout?: number;
+			actor?: StepActorConfig;
+			maxAttempts?: number;
+			onTimeout?: "stop" | "retry";
+			backoff?: "linear" | "exponential";
+			onError?: ErrorHandler;
+	  };
+
+export interface ConcurrentInput {
+	id?: string;
+	alias: string;
+	name?: string;
+	steps: ConcurrentStepInput[];
+	continueOn?: "all" | "detached";
+	onFailure?: "fail" | "collect";
+}
+
+/**
  * Workflow builder for fluent API.
  */
 export class WorkflowBuilder {
 	private readonly _name: string;
-	private _steps: (StepDefinition | ForEachDefinition)[] = [];
+	private _steps: (StepDefinition | ForEachDefinition | ConcurrentDefinition)[] = [];
 	private _aliases: Set<string> = new Set();
 	private _ids: Set<string> = new Set();
 	private _stepCounter = 0;
 	private _loopCounter = 0;
+	private _parallelCounter = 0;
 	private _inputSchema?: ZodSchema;
 	private _onError?: ErrorHandler;
 	private _description?: string;
@@ -119,7 +153,7 @@ export class WorkflowBuilder {
 		}
 	}
 
-	private _reserveId(kind: "step" | "loop", explicitId?: string): string {
+	private _reserveId(kind: "step" | "loop" | "parallel", explicitId?: string): string {
 		if (explicitId !== undefined) {
 			this._validateIdentifier(explicitId, "id");
 			if (this._ids.has(explicitId)) {
@@ -136,9 +170,12 @@ export class WorkflowBuilder {
 			if (kind === "step") {
 				this._stepCounter += 1;
 				candidate = `s${this._stepCounter}`;
-			} else {
+			} else if (kind === "loop") {
 				this._loopCounter += 1;
 				candidate = `l${this._loopCounter}`;
+			} else {
+				this._parallelCounter += 1;
+				candidate = `p${this._parallelCounter}`;
 			}
 		} while (this._ids.has(candidate));
 
@@ -218,6 +255,116 @@ export class WorkflowBuilder {
 			parallel: config.parallel,
 			concurrency: config.concurrency,
 		});
+		return this;
+	}
+
+	/**
+	 * Add a concurrent block to the workflow.
+	 */
+	concurrent(config: ConcurrentInput): this {
+		const id = this._reserveId("parallel", config.id);
+		const alias = this._reserveAlias(config.alias, true);
+		validateConcurrentConfig(this._name, alias, config);
+
+		const localIds = new Set<string>();
+		const localAliases = new Set<string>();
+		let localStepCounter = 0;
+
+		const reserveChildId = (explicitId?: string): string => {
+			if (explicitId !== undefined) {
+				this._validateIdentifier(explicitId, "concurrent step id");
+				if (localIds.has(explicitId)) {
+					throw new Error(
+						`Workflow "${this._name}" concurrent "${alias}" already has an id "${explicitId}". Explicit ids must be unique within the concurrent block.`,
+					);
+				}
+				localIds.add(explicitId);
+				return explicitId;
+			}
+
+			let candidate: string;
+			do {
+				localStepCounter += 1;
+				candidate = `s${localStepCounter}`;
+			} while (localIds.has(candidate));
+			localIds.add(candidate);
+			return candidate;
+		};
+
+		const reserveChildAlias = (baseAlias: string, explicit: boolean): string => {
+			this._validateIdentifier(baseAlias, "concurrent step alias");
+			if (explicit) {
+				if (localAliases.has(baseAlias)) {
+					throw new Error(
+						`Workflow "${this._name}" concurrent "${alias}" already has an alias "${baseAlias}". Explicit aliases must be unique within the concurrent block.`,
+					);
+				}
+				localAliases.add(baseAlias);
+				return baseAlias;
+			}
+
+			if (!localAliases.has(baseAlias)) {
+				localAliases.add(baseAlias);
+				return baseAlias;
+			}
+
+			let n = 2;
+			for (;;) {
+				const candidate = `${baseAlias}_${n}`;
+				if (!localAliases.has(candidate)) {
+					localAliases.add(candidate);
+					return candidate;
+				}
+				n += 1;
+			}
+		};
+
+		const steps: ConcurrentStepDefinition[] = config.steps.map((entry) => {
+			// Function shorthand means a plain step function entry.
+			if (typeof entry === "function") {
+				const childId = reserveChildId();
+				const childAlias = reserveChildAlias(this._baseStepAlias(entry), false);
+				return { id: childId, alias: childAlias, run: entry };
+			}
+
+			const childId = reserveChildId(entry.id);
+			const isWorkflowRun = typeof entry.run !== "function";
+			const stepConfig = this._buildStepConfig(entry);
+			if (isWorkflowRun) {
+				validateConcurrentWorkflowChildConfig(
+					this._name,
+					alias,
+					entry.alias ?? "workflow",
+					stepConfig,
+				);
+			}
+			const childAlias = reserveChildAlias(
+				// `run` is StepFunction | WorkflowDefinition; this branch picks a stable
+				// alias fallback for nested workflow entries.
+				entry.alias ??
+					(typeof entry.run === "function" ? this._baseStepAlias(entry.run) : "workflow"),
+				entry.alias !== undefined,
+			);
+
+			return {
+				id: childId,
+				alias: childAlias,
+				name: entry.name,
+				run: entry.run,
+				config: stepConfig,
+			};
+		});
+
+		this._steps.push({
+			type: "concurrent",
+			id,
+			alias,
+			name: config.name,
+			steps,
+			continueOn: config.continueOn ?? "all",
+			onFailure: config.onFailure ?? "fail",
+		});
+
 		return this;
 	}
 
