@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/coffeepy/rival/compare/v1.1.0...v1.2.0) (2026-02-14)
+
+
+### Features
+
+* **rival:** add concurrent block for parallel step execution ([#9](https://github.com/coffeepy/rival/issues/9)) ([274396c](https://github.com/coffeepy/rival/commit/274396c49dffe98d0a3b627d91cdadcf6c18a289))
+
 # [1.1.0](https://github.com/coffeepy/rival/compare/v1.0.0...v1.1.0) (2026-02-13)
 
 
